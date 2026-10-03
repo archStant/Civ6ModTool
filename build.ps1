@@ -1,0 +1,1 @@
+nuitka --standalone --onefile --enable-plugin=tk-inter --include-data-dir=assets=assets --windows-console-mode=disable --windows-icon-from-ico=app.ico --output-filename=CivIVLeaderGenerator.exe main.py
