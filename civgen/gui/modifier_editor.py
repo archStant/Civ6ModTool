@@ -8,6 +8,9 @@ from tkinter import messagebox, ttk
 
 from ..modifiers import (ENUMS, KIND_LISTS, REQUIREMENTS, TEMPLATES,
                          check_effect, new_effect, summary, templates_for)
+from . import theme
+from .widgets import ScrollFrame
+from .widgets import fit_to_screen
 from .widgets import TypeCombo
 
 
@@ -60,10 +63,14 @@ class EffectDialog(tk.Toplevel):
         if effect.get("template") not in [t.id for t in self.templates]:
             effect["template"] = self.templates[0].id   # not usable here
 
-        body = ttk.Frame(self, padding=10)
-        body.pack(fill="both", expand=True)
+        # OK / Cancel first: they keep their place on a small screen
+        btns = ttk.Frame(self, padding=(10, 0, 10, 10))
+        btns.pack(side="bottom", anchor="e")
+        scroll = ScrollFrame(self, height=None)
+        scroll.pack(fill="both", expand=True)
+        body = scroll.inner
         ttk.Label(body, text=OWNER_HINTS[owner], wraplength=560,
-                  justify="left", foreground="gray25").grid(
+                  justify="left", foreground=theme.hint()).grid(
             row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
         ttk.Label(body, text="Effect").grid(row=1, column=0, sticky="w")
         self.template_var = tk.StringVar(value=template_label(
@@ -74,7 +81,7 @@ class EffectDialog(tk.Toplevel):
         combo.grid(row=1, column=1, sticky="w", padx=6, pady=3)
         combo.bind("<<ComboboxSelected>>", lambda e: self._build_args())
         self.help = ttk.Label(body, wraplength=520, justify="left",
-                              foreground="gray25")
+                              foreground=theme.hint())
         self.help.grid(row=2, column=1, sticky="w", padx=6)
         self.args_frame = ttk.Frame(body)
         self.args_frame.grid(row=3, column=0, columnspan=2, sticky="w",
@@ -99,8 +106,7 @@ class EffectDialog(tk.Toplevel):
                                  font=("TkDefaultFont", 9, "italic"))
         self.summary.grid(row=5, column=0, columnspan=2, sticky="w",
                           pady=(10, 0))
-        btns = ttk.Frame(body)
-        btns.grid(row=6, column=0, columnspan=2, sticky="e", pady=(10, 0))
+
         ttk.Button(btns, text="OK", command=self.on_ok).pack(side="left",
                                                              padx=4)
         ttk.Button(btns, text="Cancel", command=self.destroy).pack(
@@ -112,6 +118,7 @@ class EffectDialog(tk.Toplevel):
             if req.get("preset") in REQUIREMENTS:
                 self._add_req(req)
         self._refresh_summary()
+        fit_to_screen(self)
         self.grab_set()
         self.bind("<Escape>", lambda e: self.destroy())
 

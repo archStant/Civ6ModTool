@@ -235,6 +235,20 @@ def add_texture(pantry, name, src, kind="ui", size=None):
     return True
 
 
+def atlas_image(paths, size):
+    """Images side by side in one row of size x size cells (an icon
+    atlas, like the template mod's unit atlas: portrait, then icon). Each
+    image is centre-cropped to a square and fitted to its cell. Returns
+    an RGBA image."""
+    from PIL import Image, ImageOps
+    out = Image.new("RGBA", (size * len(paths), size), (0, 0, 0, 0))
+    for i, path in enumerate(paths):
+        img = Image.open(path).convert("RGBA")
+        out.alpha_composite(ImageOps.fit(img, (size, size), Image.LANCZOS),
+                            (i * size, 0))
+    return out
+
+
 def build_xlp(xlp_class, package, texture_names):
     entries = "\n".join(
         "\t\t<Element>\n"

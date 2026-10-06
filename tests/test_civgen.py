@@ -1094,3 +1094,58 @@ class LoadingBackgroundTest(unittest.TestCase):
                       leaders.leader_custom_marks(
                           dict(leaders.new_leader_spec(),
                                load_bg_default=True)))
+
+
+class UnitAtlasTest(unittest.TestCase):
+    """A unique unit's custom icon and portrait share one atlas, portrait
+    first (like the template mod's unit atlas)."""
+
+    class NoData:
+        conn = None
+
+    civ = {"name": "X", "slug": "CIVILIZATION_X"}
+
+    def normalize(self, **spec):
+        u = uniques.new_unique_spec("unit")
+        u.update(name="Y", base="UNIT_SWORDSMAN", **spec)
+        return uniques.normalize_unique(u, self.civ, self.NoData())
+
+    def test_atlas_and_definitions(self):
+        from civgen.art import atlas_image
+        u = self.normalize(icon_path=MOMENT_IMAGE, portrait_path=MOMENT_IMAGE)
+        self.assertEqual(u["icon_defs"], [("ICON_UNIT_Y_PORTRAIT", 0),
+                                          ("ICON_UNIT_Y", 1)])
+        atlas, defs = leaders.icons_fragment(u, [(38, "ICON_UNIT_Y_38")])
+        self.assertIn('IconSize="38" IconsPerRow="2" IconsPerColumn="1"',
+                      atlas)
+        self.assertIn('Name="ICON_UNIT_Y_PORTRAIT" Atlas="ICON_ATLAS_UNIT_Y"'
+                      ' Index="0"', defs)
+        self.assertIn('Name="ICON_UNIT_Y" Atlas="ICON_ATLAS_UNIT_Y" '
+                      'Index="1"', defs)
+        self.assertEqual(atlas_image(u["atlas_paths"], 38).size, (76, 38))
+        # the copied icons: no icon, portrait or ethnicity portraits (the
+        # game would show those before the unit's own portrait)
+        sql = uniques.unique_icons_sql(u)
+        self.assertNotIn("'ICON_UNIT_SWORDSMAN'", sql)
+        self.assertNotIn("'ICON_UNIT_SWORDSMAN_PORTRAIT'", sql)
+        self.assertNotIn("ETHNICITY", sql)
+        self.assertIn("'ICON_UNIT_SWORDSMAN_FOW'", sql)
+
+    def test_one_image_serves_both(self):
+        u = self.normalize(icon_path=MOMENT_IMAGE)
+        self.assertEqual(u["atlas_paths"], [MOMENT_IMAGE, MOMENT_IMAGE])
+        u = self.normalize(portrait_path=MOMENT_IMAGE)
+        self.assertTrue(u["icon_custom"])
+        self.assertEqual(u["atlas_paths"], [MOMENT_IMAGE, MOMENT_IMAGE])
+        u = self.normalize()
+        self.assertFalse(u["icon_custom"])
+        self.assertIn("ETHNICITY", uniques.unique_icons_sql(u))
+        # other kinds keep their single icon
+        b = uniques.new_unique_spec("building")
+        b.update(name="Z", base="BUILDING_LIBRARY", icon_path=MOMENT_IMAGE)
+        b = uniques.normalize_unique(b, self.civ, self.NoData())
+        self.assertIsNone(b["icon_defs"])
+        atlas, defs = leaders.icons_fragment(b, [(32, "T")])
+        self.assertIn('IconsPerRow="1"', atlas)
+        self.assertIn('Name="ICON_BUILDING_Z" Atlas="ICON_ATLAS_BUILDING_Z" '
+                      'Index="0"', defs)

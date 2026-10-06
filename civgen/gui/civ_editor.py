@@ -8,9 +8,12 @@ from tkinter import messagebox, ttk
 from ..civs import CITIZEN_GROUPS, CIV_INFO, START_BIAS, civ_slug
 from ..uniques import KINDS, KIND_LABELS, MAIN_TABLES, new_unique_spec
 from ..util import slug_for_name, type_display_name
+from . import theme
 from .modifier_editor import EffectsFrame
 from .moments_editor import MomentsFrame
 from .unique_editor import UniqueEditor
+from .widgets import fit_to_screen
+from .widgets import icon_text
 from .widgets import (ImagePreview, ScrollFrame, TypeCombo, browse_image,
                       names_text, text_lines, type_label)
 
@@ -41,8 +44,10 @@ class CivEditor(tk.Toplevel):
                           ("citizens", "Citizen names"),
                           ("bias", "Start bias"), ("pedia", "Civilopedia"),
                           ("moments", "Historic moments")):
-            tabs[key] = ttk.Frame(notebook, padding=10)
+            # every tab scrolls if the screen is too small for it
+            tabs[key] = ScrollFrame(notebook, height=None)
             notebook.add(tabs[key], text=text)
+        tabs = {key: tab.inner for key, tab in tabs.items()}
         self._build_general(tabs["general"])
         self._build_ability(tabs["ability"])
         self._build_uniques(tabs["uniques"])
@@ -56,11 +61,13 @@ class CivEditor(tk.Toplevel):
         self.moments_frame.pack(fill="both", expand=True)
 
         btns = ttk.Frame(outer)
-        btns.pack(side="bottom", anchor="e", pady=(10, 0))
+        # (before the tabs: they keep their place on a small screen)
+        btns.pack(side="bottom", anchor="e", pady=(10, 0), before=notebook)
         ttk.Button(btns, text="OK", command=self.on_ok).pack(side="left",
                                                              padx=4)
         ttk.Button(btns, text="Cancel", command=self.destroy).pack(
             side="left", padx=4)
+        fit_to_screen(self)
         self.grab_set()
         self.bind("<Escape>", lambda e: self.destroy())
         self.protocol("WM_DELETE_WINDOW", self.destroy)
@@ -89,7 +96,7 @@ class CivEditor(tk.Toplevel):
         ttk.Entry(body, textvariable=self.adjective_var, width=30).grid(
             row=row, column=1, sticky="w", **pad)
         ttk.Label(body, text="e.g. 'Amazonian' (empty: the name)",
-                  foreground="gray25").grid(row=row, column=2, sticky="w",
+                  foreground=theme.hint()).grid(row=row, column=2, sticky="w",
                                             **pad)
         row += 1
         ttk.Label(body, text="Description").grid(row=row, column=0,
@@ -99,7 +106,7 @@ class CivEditor(tk.Toplevel):
             row=row, column=1, sticky="w", **pad)
         ttk.Label(body, text="e.g. 'Amazonian civilization' (empty: "
                              "'<adjective> civilization')",
-                  foreground="gray25").grid(row=row, column=2, sticky="w",
+                  foreground=theme.hint()).grid(row=row, column=2, sticky="w",
                                             **pad)
         row += 1
 
@@ -122,7 +129,7 @@ class CivEditor(tk.Toplevel):
                                               **pad)
             ttk.Combobox(style, textvariable=var, values=values,
                          width=30).grid(row=r, column=1, sticky="w", **pad)
-            ttk.Label(style, text=hint, foreground="gray25").grid(
+            ttk.Label(style, text=hint, foreground=theme.hint()).grid(
                 row=r, column=2, sticky="w", **pad)
         ttk.Label(style, text="Music of").grid(row=3, column=0, sticky="w",
                                                **pad)
@@ -130,10 +137,10 @@ class CivEditor(tk.Toplevel):
                                spec.get("music_from", ""), width=30)
         self.music.grid(row=3, column=1, sticky="w", **pad)
         ttk.Label(style, text="the civilization whose music it plays",
-                  foreground="gray25").grid(row=3, column=2, sticky="w",
+                  foreground=theme.hint()).grid(row=3, column=2, sticky="w",
                                             **pad)
         if not data.cultures:
-            ttk.Label(style, foreground="gray25", text=(
+            ttk.Label(style, foreground=theme.hint(), text=(
                 "(load the game cache to list the styles - or type the "
                 "names used in Cultures.artdef)")).grid(
                 row=4, column=0, columnspan=3, sticky="w", **pad)
@@ -154,7 +161,7 @@ class CivEditor(tk.Toplevel):
         ttk.Button(file_row, text="Browse...", command=lambda: (
             browse_image(self, self.icon_path, "Civilization icon"),
             self.icon_mode.set(ICON_FILE))).pack(side="left")
-        ttk.Label(icon, foreground="gray25", wraplength=560, justify="left",
+        ttk.Label(icon, foreground=theme.hint(), wraplength=560, justify="left",
                   text="A white symbol on a transparent background, like the "
                        "game's own (the game tints it in the leader's "
                        "colors). Needs the SDK asset cooker.").grid(
@@ -188,11 +195,10 @@ class CivEditor(tk.Toplevel):
             row=1, column=1, sticky="w", **pad)
         ttk.Label(body, text="Description").grid(row=2, column=0,
                                                  sticky="nw", **pad)
-        self.ability_desc = tk.Text(body, height=4, width=80, wrap="word",
-                                    undo=True)
+        box, self.ability_desc = icon_text(body, height=4, width=80,
+                                           wrap="word", undo=True)
         self.ability_desc.insert("1.0", ability.get("desc", ""))
-        self.ability_desc.grid(row=2, column=1, columnspan=2, sticky="w",
-                               **pad)
+        box.grid(row=2, column=1, columnspan=2, sticky="w", **pad)
 
         copies = ttk.LabelFrame(body, text="Copy the effects of existing "
                                            "abilities", padding=(8, 4))

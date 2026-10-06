@@ -184,7 +184,9 @@ ICON_NAMES = {
 }
 # Sizes of a custom ICON_<type> (as the game's own atlases)
 ICON_SIZES = {
-    "unit": [22, 32, 38, 50, 80, 256],
+    # (units: an atlas of portrait and icon side by side, at the sizes
+    # of the template mod's unit atlas)
+    "unit": [22, 32, 38, 50, 70, 80, 95, 200, 256],
     "building": [32, 38, 50, 80, 128, 256],
     "district": [22, 32, 38, 50, 80, 128, 256],
     "improvement": [38, 50, 80, 256],
@@ -371,7 +373,7 @@ def new_unique_spec(kind="unit"):
     spec = {"kind": kind, "base": "", "replaces": True, "name": "",
             "desc": "", "pedia": "", "stats": {}, "yields": None,
             "gpp": None, "adjacencies": True, "effects": [],
-            "icon_path": ""}
+            "icon_path": "", "portrait_path": ""}
     spec["art"] = {"unit": new_unit_art, "building": new_building_art,
                    "district": new_district_art,
                    "improvement": new_improvement_art}[kind]()
@@ -441,6 +443,12 @@ def normalize_unique(spec, civ, data, prefix=""):
     if icon_path and not os.path.isfile(icon_path):
         raise ValueError("{}: icon image not found: {}".format(label,
                                                                 icon_path))
+    # units: the portrait (unit panel, production list) next to the icon
+    portrait_path = (spec.get("portrait_path") or "").strip() \
+        if kind == "unit" else ""
+    if portrait_path and not os.path.isfile(portrait_path):
+        raise ValueError("{}: portrait image not found: {}".format(
+            label, portrait_path))
     art = {"unit": normalize_art, "building": normalize_building_art,
            "district": normalize_district_art,
            "improvement": normalize_improvement_art}[kind](spec.get("art"),
@@ -518,7 +526,14 @@ def normalize_unique(spec, civ, data, prefix=""):
                     "LOC_{}_DESCRIPTION".format(base),
         "icon_name": "ICON_" + slug,
         "icon_atlas": "ICON_ATLAS_" + slug,
-        "icon_custom": bool(icon_path),
+        "icon_custom": bool(icon_path or portrait_path),
+        # units: the images of the atlas cells (portrait, icon - either
+        # one stands in for a missing other) and their icon names
+        "portrait_path": portrait_path,
+        "atlas_paths": [portrait_path or icon_path, icon_path or
+                        portrait_path] if kind == "unit" else None,
+        "icon_defs": [("ICON_{}_PORTRAIT".format(slug), 0),
+                      ("ICON_" + slug, 1)] if kind == "unit" else None,
     }
 
 
@@ -657,9 +672,15 @@ def unique_icons_sql(u):
             u["label"])
     names = [n.format(T=source) for n in ICON_NAMES[u["kind"]]]
     if u["icon_custom"]:
-        names.remove("ICON_" + source)
+        # the atlas has these (a unit: its icon and portrait)
+        for name, _ in u.get("icon_defs") or [("ICON_" + u["slug"], 0)]:
+            name = name.replace(u["slug"], source)
+            if name in names:
+                names.remove(name)
     where = "Name IN ({})".format(", ".join(map(sql_str, names)))
-    if u["kind"] == "unit":
+    # (the game shows an ethnicity's portrait before the unit's own, so
+    # a unit with its own portrait gets none of those)
+    if u["kind"] == "unit" and not u["icon_custom"]:
         where += " OR Name GLOB {}".format(sql_str(
             "ICON_ETHNICITY_*_{}_PORTRAIT".format(source)))
     return ("-- {label}: the icons of {base}\n"

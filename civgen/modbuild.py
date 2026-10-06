@@ -14,7 +14,8 @@ from .artdefs import (CIVILIZATIONS_ARTDEF, CULTURES_ARTDEF,
                       renamed_element_xml)
 from .art import (DIPLO_BG_MASK, ICON_SIZES, MOMENT_HALF_OPACITY, MOMENT_MASK,
                   PORTRAIT_SIZE, add_texture, apply_image_mask, cook_art,
-                  fitted_portrait, make_circle_icon, shift_hue)
+                  atlas_image, fitted_portrait, make_circle_icon,
+                  shift_hue)
 from .moments import MOMENT_ILLUSTRATION_SIZE
 from .leaders import (colors_fragment, config_block,
                       gameplay_block, icons_fragment, inherited_text_sql,
@@ -535,7 +536,9 @@ def write_mod(mod_name, ctxs, folder, mod_dir, guid, cooker, report,
     name_of = name_of or (lambda kind, t: type_display_name(t))
     icon_jobs = [(cc, cc["icon_path"], CIV_ICON_SIZES) for cc in civs
                  if cc["icon_custom"]]
-    icon_jobs += [(u, u["icon_path"], UNIQUE_ICON_SIZES[u["kind"]])
+    # (a unit's source: its atlas cells, see uniques.normalize_unique)
+    icon_jobs += [(u, u["atlas_paths"] or u["icon_path"],
+                   UNIQUE_ICON_SIZES[u["kind"]])
                   for cc in civs for u in cc["uniques"] if u["icon_custom"]]
     (icon_leader_files, cooked_files, ui_package,
      fallback_package) = build_art(ctxs, folder, mod_dir, report,
@@ -987,7 +990,13 @@ def build_art(ctxs, folder, mod_dir, report, cooker,
             try:
                 for size in sizes:
                     tex = "{}_{}".format(c["icon_name"], size)
-                    if not add_texture(pantry, tex, src, size=size):
+                    cell_src, texture_size = src, size
+                    if isinstance(src, list):   # cells side by side
+                        cell_src = os.path.join(pantry, tex + "_atlas.png")
+                        atlas_image(src, size).save(cell_src)
+                        texture_size = (size * len(src), size)
+                    if not add_texture(pantry, tex, cell_src,
+                                       size=texture_size):
                         raise RuntimeError("Pillow is not installed "
                                            "(pip install Pillow)")
                     report.append("converted " + tex)

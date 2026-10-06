@@ -27,8 +27,9 @@ def _spec_images(spec):
     """(holder, key) of every image path a leader or civilization spec
     refers to."""
     if "uniques" in spec:               # a civilization
-        refs = [(spec, "icon_path")] + [(u, "icon_path")
-                                        for u in spec["uniques"]]
+        refs = [(spec, "icon_path")] + [(u, key) for u in spec["uniques"]
+                                        for key in ("icon_path",
+                                                    "portrait_path")]
     else:
         refs = [(spec, key) for key in IMAGE_KEYS]
     refs += [(entry, "path") for entry in spec.get("moment_illustrations")

@@ -342,21 +342,38 @@ def civ_icons_sql(civ):
                 source_s=sql_str(source))
 
 
-def civ_icon_preview(spec, size):
+CIV_BADGE_COLOR = (43, 43, 43)          # badge without a leader color
+
+
+def civ_icon_preview(spec, size, badge=None):
     """The civilization's icon image (size x size RGBA), or a placeholder
-    with its initials. Raises ImportError without Pillow."""
-    from PIL import Image
+    with its initials. badge: an (r, g, b) color to draw the icon on a
+    round badge of, like the game does (the game's civilization icons are
+    white, which a light list background would hide). Raises ImportError
+    without Pillow."""
+    from PIL import Image, ImageDraw
     path = (spec.get("icon_path") or "").strip()
     if path and os.path.isfile(path):
         def make():
             img = Image.open(path).convert("RGBA")
-            img.thumbnail((size, size), Image.LANCZOS)
+            # on a badge the icon keeps clear of the badge's edge
+            inner = int(round(size * 0.72)) if badge else size
+            img.thumbnail((inner, inner), Image.LANCZOS)
             out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+            if badge:
+                ss = 4                  # supersampled, for a smooth edge
+                disc = Image.new("RGBA", (size * ss, size * ss),
+                                 (0, 0, 0, 0))
+                ImageDraw.Draw(disc).ellipse(
+                    (0, 0, size * ss - 1, size * ss - 1),
+                    fill=tuple(badge) + (255,))
+                out = disc.resize((size, size), Image.LANCZOS)
             out.alpha_composite(img, ((size - img.width) // 2,
                                       (size - img.height) // 2))
             return out
         try:
-            icon = _cached(("civ_icon", size), path, make)
+            icon = _cached(("civ_icon", size, tuple(badge or ())), path,
+                           make)
             if icon is not None:
                 return icon
         except Exception:               # unreadable image

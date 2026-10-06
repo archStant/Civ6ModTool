@@ -8,6 +8,7 @@ from ..util import find_game_dir, slug_for_name
 from ..unit_art import MAX_COUNT, new_unit_art, normalize_art, unit_look
 from ..unit_models import describe as describe_design
 from ..unit_models import clean_id, new_design
+from . import theme
 from .model_designer import ModelDesigner
 from .landmark_editor import (BuildingModelFrame, DistrictModelFrame,
                               ImprovementModelFrame)
@@ -19,6 +20,8 @@ from ..uniques import (CAN_BE_NEW, CAN_REPLACE, KIND_LABELS, MAIN_TABLES,
                        NO_PREREQ, STATS)
 from .modifier_editor import EffectsFrame
 from . import help_texts
+from .widgets import fit_to_screen
+from .widgets import icon_text
 from .widgets import (HelpBox, ImagePreview, ScrollFrame, TypeCombo,
                       add_tooltip, browse_image)
 
@@ -82,23 +85,28 @@ class UniqueEditor(tk.Toplevel):
         outer.pack(fill="both", expand=True)
         notebook = ttk.Notebook(outer)
         notebook.pack(fill="both", expand=True)
-        general = ttk.Frame(notebook, padding=10)
-        stats = ttk.Frame(notebook, padding=10)
-        effects = ttk.Frame(notebook, padding=10)
-        pedia = ttk.Frame(notebook, padding=10)
-        notebook.add(general, text="General")
-        notebook.add(stats, text="Stats")
+        # every tab scrolls if the screen is too small for it
+        general_tab = ScrollFrame(notebook, height=None)
+        stats_tab = ScrollFrame(notebook, height=None)
+        effects_tab = ScrollFrame(notebook, height=None)
+        pedia_tab = ScrollFrame(notebook, height=None)
+        general, stats = general_tab.inner, stats_tab.inner
+        effects, pedia = effects_tab.inner, pedia_tab.inner
+        notebook.add(general_tab, text="General")
+        notebook.add(stats_tab, text="Stats")
         if self.kind in PLACEMENT_FRAMES:
-            placement_tab = ttk.Frame(notebook, padding=10)
-            notebook.add(placement_tab, text="Placement")
+            placement_scroll = ScrollFrame(notebook, height=None)
+            placement_tab = placement_scroll.inner
+            notebook.add(placement_scroll, text="Placement")
         if self.kind == "unit":         # tall: it scrolls
             model_tab = ScrollFrame(notebook, height=620)
             model = model_tab.inner
         else:
-            model_tab = model = ttk.Frame(notebook, padding=10)
+            model_tab = ScrollFrame(notebook, height=None)
+            model = model_tab.inner
         notebook.add(model_tab, text="3D model")
-        notebook.add(effects, text="Effects")
-        notebook.add(pedia, text="Civilopedia")
+        notebook.add(effects_tab, text="Effects")
+        notebook.add(pedia_tab, text="Civilopedia")
         self._build_general(general, spec)
         self._build_stats(stats, spec)
         self.placement_frame = None
@@ -137,11 +145,13 @@ class UniqueEditor(tk.Toplevel):
         self.pedia.pack(fill="both", expand=True, pady=(4, 0))
 
         btns = ttk.Frame(outer)
-        btns.pack(side="bottom", anchor="e", pady=(10, 0))
+        # (before the tabs: they keep their place on a small screen)
+        btns.pack(side="bottom", anchor="e", pady=(10, 0), before=notebook)
         ttk.Button(btns, text="OK", command=self.on_ok).pack(side="left",
                                                              padx=4)
         ttk.Button(btns, text="Cancel", command=self.destroy).pack(
             side="left", padx=4)
+        fit_to_screen(self)
         self.grab_set()
         self.bind("<Escape>", lambda e: self.destroy())
 
@@ -161,7 +171,7 @@ class UniqueEditor(tk.Toplevel):
         self.base.grid(row=0, column=1, columnspan=2, sticky="w", **pad)
         self.base.var.trace_add("write", lambda *_: self._refresh_base())
         ttk.Label(body, text=BASE_HINTS[self.kind], wraplength=520,
-                  justify="left", foreground="gray25").grid(
+                  justify="left", foreground=theme.hint()).grid(
             row=1, column=1, columnspan=2, sticky="w", **pad)
         self.base_info = ttk.Label(body, wraplength=520, justify="left")
         self.base_info.grid(row=2, column=1, columnspan=2, sticky="w", **pad)
@@ -183,7 +193,7 @@ class UniqueEditor(tk.Toplevel):
             self.replaces.set_type(value)
         else:
             self.replaces = None
-            ttk.Label(body, foreground="gray25", text=(
+            ttk.Label(body, foreground=theme.hint(), text=(
                 "Nothing - the game has no unique improvements replacing "
                 "others: its Builders build it as well.")).grid(
                 row=3, column=1, columnspan=2, sticky="w", **pad)
@@ -197,11 +207,12 @@ class UniqueEditor(tk.Toplevel):
         self.name_var.trace_add("write", lambda *_: self._refresh_slug())
         ttk.Label(body, text="Description").grid(row=5, column=0,
                                                  sticky="nw", **pad)
-        self.desc = tk.Text(body, height=5, width=64, wrap="word", undo=True)
+        box, self.desc = icon_text(body, height=5, width=64, wrap="word",
+                                   undo=True)
         self.desc.insert("1.0", spec.get("desc", ""))
-        self.desc.grid(row=5, column=1, columnspan=2, sticky="w", **pad)
+        box.grid(row=5, column=1, columnspan=2, sticky="w", **pad)
         ttk.Label(body, text="(empty: the copied item's description)",
-                  foreground="gray25").grid(row=6, column=1, columnspan=2,
+                  foreground=theme.hint()).grid(row=6, column=1, columnspan=2,
                                             sticky="w", padx=6)
 
         ttk.Label(body, text="Icon").grid(row=7, column=0, sticky="nw",
@@ -216,8 +227,32 @@ class UniqueEditor(tk.Toplevel):
             self, self.icon_path, "Icon image")).pack(side="left")
         ttk.Label(body, text="(empty: the copied item's icons; an image "
                              "replaces its main icon - square, transparent "
-                             "background)", foreground="gray25").grid(
+                             "background)", foreground=theme.hint()).grid(
             row=8, column=1, columnspan=2, sticky="w", padx=6)
+        self.portrait_path = tk.StringVar(value=spec.get("portrait_path", ""))
+        if self.kind == "unit":
+            # the unit's portrait: in the same atlas as its icon
+            label = ttk.Label(body, text="Portrait (?)")
+            label.grid(row=9, column=0, sticky="nw", **pad)
+            add_tooltip(label, (
+                "The picture in the unit panel and the production list. "
+                "Icon and portrait go into one icon atlas, side by side "
+                "(portrait first), like the game's own unique units."))
+            portrait_row = ttk.Frame(body)
+            portrait_row.grid(row=9, column=1, columnspan=2, sticky="w",
+                              **pad)
+            ImagePreview(portrait_row, self.portrait_path).pack(side="left")
+            ttk.Entry(portrait_row, textvariable=self.portrait_path,
+                      width=40).pack(side="left", padx=6)
+            ttk.Button(portrait_row, text="Browse...",
+                       command=lambda: browse_image(
+                           self, self.portrait_path,
+                           "Portrait image")).pack(side="left")
+            ttk.Label(body, text=(
+                "(square; empty: the icon image is used for the portrait "
+                "too - or, with neither, the copied unit's)"),
+                foreground=theme.hint()).grid(
+                row=10, column=1, columnspan=2, sticky="w", padx=6)
         self._refresh_slug()
 
     def _build_stats(self, body, spec):
@@ -262,7 +297,7 @@ class UniqueEditor(tk.Toplevel):
                 combo.grid(row=row, column=1, sticky="w", **pad)
                 self.stat_getters[column] = combo.get_type
                 self.stat_vars[column] = combo.var
-            self.base_labels[column] = ttk.Label(body, foreground="gray25")
+            self.base_labels[column] = ttk.Label(body, foreground=theme.hint())
             self.base_labels[column].grid(row=row, column=2, sticky="w",
                                           **pad)
             row += 1
@@ -332,10 +367,10 @@ class UniqueEditor(tk.Toplevel):
         self.look_from.grid(row=1, column=1, sticky="w", **pad)
         add_tooltip(self.look_from, help_texts.UNIT_TIPS["look"])
         ttk.Label(body, text="(empty: the unit it copies; its icons come "
-                             "along)", foreground="gray25").grid(
+                             "along)", foreground=theme.hint()).grid(
             row=1, column=2, sticky="w", **pad)
         self.look_info = ttk.Label(body, wraplength=640, justify="left",
-                                   foreground="gray25")
+                                   foreground=theme.hint())
         self.look_info.grid(row=2, column=1, columnspan=2, sticky="w", **pad)
         ttk.Button(body, text="Use its model as a starting point",
                    command=self._load_look).grid(row=3, column=1, sticky="w",
@@ -377,7 +412,7 @@ class UniqueEditor(tk.Toplevel):
             ttk.Combobox(body, textvariable=var, values=values,
                          width=42).grid(row=r, column=1, sticky="w", **pad)
             ttk.Label(body, text="(empty: the look unit's) " + hint,
-                      foreground="gray25").grid(row=r, column=2,
+                      foreground=theme.hint()).grid(row=r, column=2,
                                                 sticky="w", **pad)
         ttk.Label(body, text="Sounds like").grid(row=7, column=0, sticky="w",
                                                  **pad)
@@ -386,10 +421,10 @@ class UniqueEditor(tk.Toplevel):
         self.sound_from.grid(row=7, column=1, sticky="w", **pad)
         add_tooltip(self.sound_from, help_texts.UNIT_TIPS["sound"])
         ttk.Label(body, text="(empty: the look unit's)",
-                  foreground="gray25").grid(row=7, column=2, sticky="w",
+                  foreground=theme.hint()).grid(row=7, column=2, sticky="w",
                                             **pad)
         if not lists["members"]:
-            ttk.Label(body, foreground="gray25", text=(
+            ttk.Label(body, foreground=theme.hint(), text=(
                 "(load the game cache - with the game installed - to list "
                 "the models, formations and animations)")).grid(
                 row=8, column=0, columnspan=3, sticky="w", **pad)
@@ -663,6 +698,7 @@ class UniqueEditor(tk.Toplevel):
                                         tk.BooleanVar(value=True)).get()),
             "effects": self.effects.effects(),
             "icon_path": self.icon_path.get().strip(),
+            "portrait_path": self.portrait_path.get().strip(),
         }
         spec["art"] = self.model_spec() if self.kind == "unit" \
             else self.landmark_frame.art()

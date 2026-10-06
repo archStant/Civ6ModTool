@@ -15,6 +15,9 @@ from ..texts import (DIPLO_TEXT, PEDIA_HISTORY, PEDIA_TEXT,
                      inherit_candidates, spec_texts, texts_from_json,
                      texts_to_json)
 from ..leaders import AI_TRAITS, DEFAULT_AI_TRAITS, spec_icon_mode
+from . import theme
+from .widgets import fit_to_screen
+from .widgets import icon_text
 from .widgets import IconCropDialog, ScrollFrame, add_tooltip
 from .modifier_editor import EffectsFrame
 from .moments_editor import HELP as MOMENTS_HELP, MomentsFrame
@@ -46,28 +49,29 @@ class LeaderEditor(tk.Toplevel):
         notebook = ttk.Notebook(outer)
         notebook.pack(fill="both", expand=True)
 
-        general = ttk.Frame(notebook, padding=10)
+        # every tab scrolls if the screen is too small for it
+        general = ScrollFrame(notebook, height=None)
         diplo = ScrollFrame(notebook)
         pedia = ScrollFrame(notebook)
         notebook.add(general, text="General")
         ability = ScrollFrame(notebook)
         notebook.add(ability, text="Ability")
-        agenda = ttk.Frame(notebook, padding=10)
+        agenda = ScrollFrame(notebook, height=None)
         notebook.add(agenda, text="Agenda")
-        cities = ttk.Frame(notebook, padding=10)
+        cities = ScrollFrame(notebook, height=None)
         notebook.add(cities, text="City names")
         notebook.add(diplo, text="Diplomacy text")
         notebook.add(pedia, text="Civilopedia")
 
-        self._build_general(general, spec)
+        self._build_general(general.inner, spec)
         self.on_name_changed()          # show the type right away
         texts = spec_texts(spec)
         self.text_widgets = {}          # tag template -> tk.Text
         self._build_diplo(diplo.inner, texts)
         self._build_pedia(pedia.inner, texts)
         self._build_abilities(ability.inner, spec)
-        self._build_agenda(agenda, spec)
-        self._build_cities(cities, spec)
+        self._build_agenda(agenda.inner, spec)
+        self._build_cities(cities.inner, spec)
         # historic moment pictures belong to civilizations now; a leader
         # of a game civilization from an older project keeps its own
         self.moments_frame = None
@@ -78,14 +82,16 @@ class LeaderEditor(tk.Toplevel):
             self.moments_frame.configure(padding=10)
             notebook.add(self.moments_frame, text="Historic moments (old)")
 
-        # -- buttons
+        # -- buttons (packed before the tabs: they keep their place when
+        # the window is smaller than the tabs want)
         btns = ttk.Frame(outer)
-        btns.pack(side="bottom", anchor="e", pady=(10, 0))
+        btns.pack(side="bottom", anchor="e", pady=(10, 0), before=notebook)
         ttk.Button(btns, text="OK", command=self.on_ok).pack(
             side="left", padx=4)
         ttk.Button(btns, text="Cancel", command=self.destroy).pack(
             side="left", padx=4)
 
+        fit_to_screen(self)
         self.grab_set()
         self.bind("<Return>", self.on_return)
         self.bind("<Escape>", lambda e: self.destroy())
@@ -143,7 +149,7 @@ class LeaderEditor(tk.Toplevel):
             "ability of its own (Ability tab) and its own agenda and AI "
             "personality (Agenda tab)."))
         row += 1
-        self.orig_info = ttk.Label(body, foreground="gray25",
+        self.orig_info = ttk.Label(body, foreground=theme.hint(),
                                    wraplength=900, justify="left")
         self.orig_info.grid(row=row, column=1, columnspan=3, sticky="w",
                             padx=6)
@@ -537,7 +543,7 @@ class LeaderEditor(tk.Toplevel):
                     key=lambda a: self.app.data.agendas[a]["name"])])
         combo.grid(row=1, column=1, sticky="w", **pad)
         self.agenda_info = ttk.Label(parent, wraplength=560, justify="left",
-                                     foreground="gray25")
+                                     foreground=theme.hint())
         self.agenda_info.grid(row=2, column=1, sticky="w", **pad)
 
         ttk.Label(parent, text="New name").grid(row=3, column=0, sticky="w",
@@ -547,10 +553,10 @@ class LeaderEditor(tk.Toplevel):
             row=3, column=1, sticky="w", **pad)
         ttk.Label(parent, text="New description").grid(row=4, column=0,
                                                        sticky="nw", **pad)
-        self.agenda_desc = tk.Text(parent, height=4, width=70, wrap="word",
-                                   undo=True)
+        box, self.agenda_desc = icon_text(parent, height=4, width=70,
+                                          wrap="word", undo=True)
         self.agenda_desc.insert("1.0", spec.get("agenda_desc", ""))
-        self.agenda_desc.grid(row=4, column=1, sticky="w", **pad)
+        box.grid(row=4, column=1, sticky="w", **pad)
         ttk.Button(parent, text="Copy agenda's text into empty fields",
                    command=self.copy_agenda_text).grid(
             row=5, column=1, sticky="w", **pad)
@@ -561,7 +567,7 @@ class LeaderEditor(tk.Toplevel):
                                      padding=(8, 4))
         self.ai_box.grid(row=6, column=0, columnspan=2, sticky="we",
                          pady=(12, 0))
-        self.ai_info = ttk.Label(self.ai_box, foreground="gray25",
+        self.ai_info = ttk.Label(self.ai_box, foreground=theme.hint(),
                                  wraplength=760, justify="left")
         self.ai_info.grid(row=0, column=0, columnspan=3, sticky="w",
                           pady=(0, 4))
@@ -640,13 +646,12 @@ class LeaderEditor(tk.Toplevel):
                                             **pad)
         ttk.Label(box, text="Description").grid(row=1, column=0,
                                                 sticky="nw", **pad)
-        self.new_ability_desc = tk.Text(box, height=3, width=80,
-                                        wrap="word", undo=True)
+        desc_box, self.new_ability_desc = icon_text(
+            box, height=3, width=80, wrap="word", undo=True)
         self.new_ability_desc.insert("1.0", new.get("desc", ""))
-        self.new_ability_desc.grid(row=1, column=1, columnspan=2,
-                                   sticky="w", **pad)
+        desc_box.grid(row=1, column=1, columnspan=2, sticky="w", **pad)
         ttk.Label(box, text="(empty: a list of its effects)",
-                  foreground="gray25").grid(row=2, column=1, sticky="w",
+                  foreground=theme.hint()).grid(row=2, column=1, sticky="w",
                                             padx=6)
         self.new_ability_effects = EffectsFrame(box, self.app, "trait",
                                                 new.get("effects"))
@@ -711,7 +716,7 @@ class LeaderEditor(tk.Toplevel):
                 text = ("{} has no ability that can be renamed (it only "
                         "unlocks a unique item, or is not in the loaded game "
                         "data).".format(type_display_name(orig)))
-            ttk.Label(frame, text=text, foreground="gray25").grid(
+            ttk.Label(frame, text=text, foreground=theme.hint()).grid(
                 row=0, column=0, sticky="w", **pad)
             return
         row = 0
@@ -725,7 +730,7 @@ class LeaderEditor(tk.Toplevel):
             if info and info["desc"]:
                 ttk.Label(frame, text=info["desc"].replace("[NEWLINE]", "\n"),
                           wraplength=560, justify="left",
-                          foreground="gray25").grid(row=row, column=1,
+                          foreground=theme.hint()).grid(row=row, column=1,
                                                     sticky="w", **pad)
                 row += 1
             text = self.ability_texts.get(trait) or {}
@@ -737,9 +742,10 @@ class LeaderEditor(tk.Toplevel):
             row += 1
             ttk.Label(frame, text="New description").grid(
                 row=row, column=0, sticky="nw", **pad)
-            desc = tk.Text(frame, height=4, width=70, wrap="word", undo=True)
+            desc_box, desc = icon_text(frame, height=4, width=70,
+                                       wrap="word", undo=True)
             desc.insert("1.0", text.get("desc", ""))
-            desc.grid(row=row, column=1, sticky="w", **pad)
+            desc_box.grid(row=row, column=1, sticky="w", **pad)
             row += 1
             self.ability_widgets[trait] = (name_var, desc)
         if any(info for _, info in shown):
@@ -1043,9 +1049,12 @@ class LeaderEditor(tk.Toplevel):
         for attr, label in ((self.primary, self.primary_lbl),
                             (self.secondary, self.secondary_lbl)):
             r, g, b = attr
+            # dark text on light colors, light text on dark ones
+            light = 0.299 * r + 0.587 * g + 0.114 * b > 140
             label.config(
                 text="({},{},{})".format(r, g, b),
-                background="#%02x%02x%02x" % (r, g, b))
+                background="#%02x%02x%02x" % (r, g, b),
+                foreground="black" if light else "white")
 
     def browse_image(self, var, title):
         path = filedialog.askopenfilename(

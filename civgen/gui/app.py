@@ -20,13 +20,16 @@ from ..art import (APP_ICON, COOKER_EXE, LIST_ICON_SIZE, find_cooker,
                    fit_icon_crop)
 from ..leaders import (CUSTOM_MARKS, leader_custom_marks, leader_icon_preview,
                        needs_art, new_leader_spec)
-from ..civs import civ_icon_preview, civ_slug, new_civ_spec
+from ..civs import (CIV_BADGE_COLOR, civ_icon_preview, civ_slug,
+                    new_civ_spec)
 from ..uniques import KINDS, MAIN_TABLES
 from ..modbuild import prepare_project, write_mod
 from ..moments import move_to_civs as move_moments_to_civs
 from ..project import (PROJECT_MAGIC, PROJECT_VERSION, export_leaders,
                        import_leaders)
-from .widgets import BusyDialog, Tooltip
+from . import theme
+from .widgets import install_icon_context_menu
+from .widgets import BusyDialog, Tooltip, add_tooltip
 from .leader_editor import LeaderEditor
 from .civ_editor import CivEditor
 
@@ -42,6 +45,9 @@ class GeneratorApp(tk.Tk):
         self.title("Civ 6 Mod Generator - civilizations and leaders")
         self.minsize(760, 520)
         self._set_window_icon()
+        # light / dark mode before any widget, so they start in its colors
+        theme.init(self, self._configure_styles)
+        theme.apply(theme.preferred_dark())
 
         self.data = GameData()
         self.project = self._empty_project()
@@ -49,9 +55,12 @@ class GeneratorApp(tk.Tk):
         self._saved_state = None
 
         self._build_widgets()
+        # right-click in any text field: insert a game icon
+        install_icon_context_menu(self)
         self._refresh_lists()
         self._mark_saved()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.maximize()
 
     def _set_window_icon(self):
         """assets/icon.png as the icon of this and every other window."""
@@ -143,57 +152,130 @@ class GeneratorApp(tk.Tk):
 
     # -- widget construction ---------------------------------------------------
 
+    def _configure_styles(self):
+        """The app's own styles; they belong to the ttk theme in use, so
+        the theme module calls this after every light / dark switch."""
+        style = ttk.Style(self)
+        style.configure("Toolbar.TFrame", padding=(6, 4))
+        style.configure("Toolbutton", padding=(10, 5))
+        style.configure("Generate.TButton", font=("TkDefaultFont", 10,
+                                                  "bold"), padding=(12, 4))
+        style.configure("Status.TLabel", foreground=theme.hint(),
+                        padding=(8, 2))
+        # tall rows so each leader's icon fits next to their name
+        style.configure("Leaders.Treeview", rowheight=LIST_ICON_SIZE + 8)
+
+    def on_dark_mode(self):
+        """The toolbar's Dark mode switch: apply and remember it."""
+        dark = bool(self.dark_var.get())
+        theme.apply(dark)
+        theme.save_setting("dark_mode", dark)
+
     def _build_widgets(self):
         pad = {"padx": 6, "pady": 3}
-        top = ttk.Frame(self, padding=10)
+
+        # -- toolbar: project, game data, import / export, generate
+        toolbar = ttk.Frame(self, style="Toolbar.TFrame")
+        toolbar.pack(side="top", fill="x")
+
+        def tool(text, command, tip, **kw):
+            button = ttk.Button(toolbar, text=text, command=command,
+                                style="Toolbutton", **kw)
+            button.pack(side="left", padx=1)
+            add_tooltip(button, tip)
+            return button
+
+        def separator():
+            ttk.Separator(toolbar, orient="vertical").pack(
+                side="left", fill="y", padx=6, pady=2)
+
+        tool("New", self.on_new_project, "Start a new project (Ctrl+N)")
+        tool("Open...", self.on_open_project, "Open a project (Ctrl+O)")
+        self.save_btn = tool("Save", self.on_save_project,
+                             "Save the project (Ctrl+S)")
+        tool("Save as...", self.on_save_project_as,
+             "Save the project under another name (Ctrl+Shift+S)")
+        separator()
+        tool("Load game data...", self.on_load_cache,
+             "Read civilizations, leaders, units, buildings... from the "
+             "game's own cache, for the editors' lists")
+        separator()
+        tool("Import...", self.on_import_leaders,
+             "Add the leaders (and civilizations) of an export to this "
+             "project")
+        tool("Export...", self.on_export_leaders,
+             "Export the selected leaders (and their civilizations), with "
+             "their images, to share or move them")
+        self.generate_btn = ttk.Button(toolbar, text="Generate mod",
+                                       style="Generate.TButton",
+                                       command=self.on_generate)
+        self.generate_btn.pack(side="right", padx=(6, 2))
+        add_tooltip(self.generate_btn, "Write the mod into the output "
+                    "folder (F5)")
+        self.fullscreen_btn = tool("Fullscreen", self.toggle_fullscreen,
+                                   "Fill the whole screen (F11; Esc "
+                                   "leaves it)")
+        self.fullscreen_btn.pack_configure(side="right")
+        self.dark_var = tk.BooleanVar(value=theme.is_dark())
+        dark = ttk.Checkbutton(toolbar, text="Dark mode",
+                               variable=self.dark_var, style="Toolbutton",
+                               command=self.on_dark_mode)
+        dark.pack(side="right", padx=1)
+        add_tooltip(dark, "Switch between light and dark colors (remembered "
+                    "for next time)")
+        ttk.Separator(self, orient="horizontal").pack(side="top", fill="x")
+
+        # -- status bar: project file and game data
+        status = ttk.Frame(self)
+        status.pack(side="bottom", fill="x")
+        ttk.Separator(status, orient="horizontal").pack(side="top",
+                                                        fill="x")
+        self.project_label = ttk.Label(status, text="(unsaved)",
+                                       style="Status.TLabel")
+        self.project_label.pack(side="left")
+        self.cache_label = ttk.Label(status, text="using built-in list",
+                                     style="Status.TLabel")
+        self.cache_label.pack(side="right")
+        ttk.Label(status, text="Game data:", style="Status.TLabel").pack(
+            side="right")
+
+        top = ttk.Frame(self, padding=(10, 6, 10, 6))
         top.pack(fill="both", expand=True)
 
-        # -- project row
-        ttk.Label(top, text="Project:").grid(row=0, column=0, sticky="w",
-                                             **pad)
-        ttk.Button(top, text="New", command=self.on_new_project).grid(
-            row=0, column=1, sticky="w", **pad)
-        ttk.Button(top, text="Open...", command=self.on_open_project).grid(
-            row=0, column=2, sticky="w", **pad)
-        self.save_btn = ttk.Button(top, text="Save...",
-                                   command=self.on_save_project)
-        self.save_btn.grid(row=0, column=3, sticky="w", **pad)
-        self.project_label = ttk.Label(top, text="(unsaved)")
-        self.project_label.grid(row=0, column=4, sticky="w", **pad)
-
-        # -- game cache row
-        ttk.Label(top, text="Game data:").grid(row=1, column=0, sticky="w",
-                                               **pad)
-        ttk.Button(top, text="Load from game cache...",
-                   command=self.on_load_cache).grid(row=1, column=1,
-                                                    columnspan=2,
-                                                    sticky="w", **pad)
-        self.cache_label = ttk.Label(top, text="using built-in list")
-        self.cache_label.grid(row=1, column=3, columnspan=2, sticky="w",
-                              **pad)
-
-        # -- mod name row
-        ttk.Label(top, text="Mod name:").grid(row=2, column=0, sticky="w",
+        # -- mod settings, on one line
+        settings = ttk.LabelFrame(top, text="Mod", padding=(8, 4))
+        settings.grid(row=0, column=0, sticky="we", pady=(0, 6))
+        ttk.Label(settings, text="Name").grid(row=0, column=0, sticky="w",
                                               **pad)
         self.mod_name_var = tk.StringVar(
             value=self.project["mod_name"])
-        ttk.Entry(top, textvariable=self.mod_name_var, width=32).grid(
-            row=2, column=1, columnspan=2, sticky="w", **pad)
-        prefix_row = ttk.Frame(top)
-        prefix_row.grid(row=2, column=3, columnspan=2, sticky="w", **pad)
-        ttk.Label(prefix_row, text="Type prefix:").pack(side="left")
+        ttk.Entry(settings, textvariable=self.mod_name_var, width=28).grid(
+            row=0, column=1, sticky="w", **pad)
+        label = ttk.Label(settings, text="Type prefix (?)")
+        label.grid(row=0, column=2, sticky="w", padx=(18, 6), pady=3)
+        add_tooltip(label, "Put in front of every type the mod makes, so "
+                    "it cannot clash with other mods' (e.g. your initials).")
         self.prefix_var = tk.StringVar(value=self.project.get("prefix", ""))
-        ttk.Entry(prefix_row, textvariable=self.prefix_var, width=10).pack(
-            side="left", padx=(6, 6))
-        self.prefix_hint = ttk.Label(prefix_row, text="")
-        self.prefix_hint.pack(side="left")
+        ttk.Entry(settings, textvariable=self.prefix_var, width=10).grid(
+            row=0, column=3, sticky="w", **pad)
+        self.prefix_hint = ttk.Label(settings, text="", foreground=theme.hint())
+        self.prefix_hint.grid(row=0, column=4, sticky="w", **pad)
         self.prefix_var.trace_add("write", lambda *_: self.prefix_hint.config(
             text="-> " + slug_for_name("Name", self.type_prefix())))
         self.prefix_var.set(self.prefix_var.get())   # show the hint
+        ttk.Label(settings, text="Output folder").grid(
+            row=0, column=5, sticky="w", padx=(18, 6), pady=3)
+        self.out_var = tk.StringVar(value=self.project["output_dir"])
+        ttk.Entry(settings, textvariable=self.out_var).grid(
+            row=0, column=6, sticky="we", **pad)
+        ttk.Button(settings, text="Browse...",
+                   command=self.on_browse_out).grid(row=0, column=7,
+                                                    sticky="w", **pad)
+        settings.columnconfigure(6, weight=1)
 
         # -- leaders and civilizations, one tab each
         notebook = ttk.Notebook(top)
-        notebook.grid(row=3, column=0, columnspan=5, sticky="nsew", **pad)
+        notebook.grid(row=1, column=0, sticky="nsew")
         leader_tab = ttk.Frame(notebook, padding=6)
         civ_tab = ttk.Frame(notebook, padding=6)
         notebook.add(leader_tab, text="Leaders")
@@ -201,11 +283,10 @@ class GeneratorApp(tk.Tk):
         leader_tab.columnconfigure(0, weight=1)
         leader_tab.rowconfigure(0, weight=1)
         self._build_civ_tab(civ_tab)
+        top.columnconfigure(0, weight=1)
+        top.rowconfigure(1, weight=1)
 
         # -- leader list
-        # tall rows so each leader's icon fits next to their name
-        ttk.Style(self).configure("Leaders.Treeview",
-                                  rowheight=LIST_ICON_SIZE + 8)
         list_frame = ttk.Frame(leader_tab)
         list_frame.grid(row=0, column=0, sticky="nsew")
         self.tree = ttk.Treeview(list_frame, columns=("civ", "orig", "icon"),
@@ -231,7 +312,7 @@ class GeneratorApp(tk.Tk):
         self.tree.column("orig", width=160)
         self.tree.heading("icon", text="Custom")
         self.tree.column("icon", width=140, anchor="w")
-        ttk.Label(list_frame, foreground="gray", text="   ".join(
+        ttk.Label(list_frame, foreground=theme.hint(), text="   ".join(
             "{} {}".format(symbol, what) for symbol, what in CUSTOM_MARKS)
         ).grid(row=2, column=0, columnspan=2, sticky="w", pady=(3, 0))
         self.tree_tip = Tooltip(self.tree)
@@ -246,33 +327,41 @@ class GeneratorApp(tk.Tk):
                           ("Duplicate", self.on_duplicate_leader),
                           ("Remove", self.on_remove_leader)):
             ttk.Button(btns, text=text, command=cmd).pack(fill="x", pady=2)
-        ttk.Separator(btns).pack(fill="x", pady=6)
-        for text, cmd in (("Export...", self.on_export_leaders),
-                          ("Import...", self.on_import_leaders)):
-            ttk.Button(btns, text=text, command=cmd).pack(fill="x", pady=2)
-
-        # -- output folder row
-        ttk.Label(top, text="Output folder:").grid(row=4, column=0,
-                                                   sticky="w", **pad)
-        self.out_var = tk.StringVar(value=self.project["output_dir"])
-        ttk.Entry(top, textvariable=self.out_var, width=44).grid(
-            row=4, column=1, columnspan=3, sticky="w", **pad)
-        ttk.Button(top, text="Browse...", command=self.on_browse_out).grid(
-            row=4, column=4, sticky="w", **pad)
-
-        # -- generate
-        self.generate_btn = ttk.Button(top, text="Generate mod",
-                                        command=self.on_generate)
-        self.generate_btn.grid(row=5, column=0, sticky="w", padx=6, pady=10)
-
-        top.columnconfigure(0, weight=0)
-        top.columnconfigure(1, weight=1)
-        top.rowconfigure(3, weight=1)
 
         for var in (self.mod_name_var, self.prefix_var, self.out_var):
             var.trace_add("write", lambda *_: self._update_save_button())
         # civilization types include the prefix
         self.prefix_var.trace_add("write", lambda *_: self._refresh_lists())
+
+        # -- keyboard shortcuts
+        for keys, command in (("<Control-n>", self.on_new_project),
+                              ("<Control-o>", self.on_open_project),
+                              ("<Control-s>", self.on_save_project),
+                              ("<Control-S>", self.on_save_project_as),
+                              ("<F5>", self.on_generate),
+                              ("<F11>", self.toggle_fullscreen)):
+            self.bind(keys, lambda e, c=command: c())
+        self.bind("<Escape>", lambda e: self.toggle_fullscreen(False))
+
+    def maximize(self):
+        """Fill the screen (as a normal, maximized window)."""
+        try:
+            self.state("zoomed")                # Windows, macOS
+        except tk.TclError:
+            try:
+                self.attributes("-zoomed", True)    # X11
+            except tk.TclError:
+                self.geometry("{}x{}+0+0".format(self.winfo_screenwidth(),
+                                                 self.winfo_screenheight()))
+
+    def toggle_fullscreen(self, on=None):
+        """Fullscreen without title bar and taskbar (on: True / False,
+        None = switch)."""
+        if on is None:
+            on = not self.attributes("-fullscreen")
+        self.attributes("-fullscreen", bool(on))
+        self.fullscreen_btn.configure(text="Exit fullscreen" if on
+                                      else "Fullscreen")
 
     def _build_civ_tab(self, tab):
         tab.columnconfigure(0, weight=1)
@@ -292,7 +381,7 @@ class GeneratorApp(tk.Tk):
         self.civ_tree.column("uniques", width=170)
         self.civ_tree.grid(row=0, column=0, sticky="nsew")
         self.civ_tree.bind("<Double-1>", lambda e: self.on_edit_civ())
-        ttk.Label(tab, foreground="gray", wraplength=640, justify="left",
+        ttk.Label(tab, foreground=theme.hint(), wraplength=640, justify="left",
                   text="A new civilization needs at least one leader: add "
                        "one on the Leaders tab and pick the civilization "
                        "there (any leader can be the one it inherits "
@@ -341,8 +430,11 @@ class GeneratorApp(tk.Tk):
     def _update_save_button(self):
         if self._saved_state is None:   # still building the widgets
             return
-        self.save_btn.state(["!disabled"] if self._has_unsaved_changes()
-                            else ["disabled"])
+        unsaved = self._has_unsaved_changes()
+        self.save_btn.state(["!disabled"] if unsaved else ["disabled"])
+        name = os.path.basename(self.project_path) if self.project_path             else "New project (not saved yet)"
+        self.project_label.config(text="Project: {}{}".format(
+            name, " - unsaved changes" if unsaved else ""))
 
     # -- list handling ---------------------------------------------------------
 
@@ -388,17 +480,21 @@ class GeneratorApp(tk.Tk):
         selected = tree.selection()
         tree.delete(*tree.get_children())
         self._civ_icons = []
-        led = {}
+        led, colors = {}, {}
         for spec in self.project["leaders"]:
-            led.setdefault(self.resolve_civ(spec), []).append(
-                spec.get("name", ""))
+            civ_type = self.resolve_civ(spec)
+            led.setdefault(civ_type, []).append(spec.get("name", ""))
+            # the badge behind the icon: its first leader's color
+            colors.setdefault(civ_type, tuple(spec.get("primary") or
+                                              CIV_BADGE_COLOR))
         for i, spec in enumerate(self.project["civs"]):
             civ_type = civ_slug(spec, self.type_prefix())
             photo = ""
             try:
                 from PIL import ImageTk
                 photo = ImageTk.PhotoImage(civ_icon_preview(
-                    spec, LIST_ICON_SIZE))
+                    spec, LIST_ICON_SIZE,
+                    badge=colors.get(civ_type, CIV_BADGE_COLOR)))
                 self._civ_icons.append(photo)
             except ImportError:         # no Pillow: names only
                 pass
@@ -676,7 +772,6 @@ class GeneratorApp(tk.Tk):
         self.mod_name_var.set(self.project["mod_name"])
         self.prefix_var.set(self.project["prefix"])
         self.out_var.set(self.project["output_dir"])
-        self.project_label.config(text="(unsaved)")
         self._refresh_lists()
         self._mark_saved()
 
@@ -726,7 +821,6 @@ class GeneratorApp(tk.Tk):
                                                "Alternate Leaders"))
         self.prefix_var.set(self.project.get("prefix", ""))
         self.out_var.set(self.project["output_dir"])
-        self.project_label.config(text=os.path.basename(path))
         self._refresh_lists()
         self._mark_saved()
 
@@ -782,12 +876,20 @@ class GeneratorApp(tk.Tk):
         except OSError as exc:
             messagebox.showerror("Could not save project", str(exc))
             return
-        self.project_label.config(text=os.path.basename(path))
         self._mark_saved()
         messagebox.showinfo("Project saved",
                             "Saved {} leader(s) and {} civilization(s) "
                             "to:\n{}".format(len(self.project["leaders"]),
                                             len(self.project["civs"]), path))
+
+    def on_save_project_as(self):
+        """Save under a new file name (the project then lives there)."""
+        old = self.project_path
+        self.project_path = None
+        self.on_save_project()
+        if not self.project_path:       # cancelled
+            self.project_path = old
+            self._update_save_button()
 
     # -- misc ---------------------------------------------------------------------
 
@@ -807,7 +909,9 @@ class GeneratorApp(tk.Tk):
         except sqlite3.Error as exc:
             messagebox.showerror("Could not read game data", str(exc))
             return
-        self.cache_label.config(text=os.path.basename(path))
+        self.cache_label.config(text="{} ({} civilizations, {} leaders)".format(
+            os.path.basename(path), len(self.data.civ_to_leaders),
+            len(self.data.leader_meta)))
         messagebox.showinfo(
             "Game data loaded",
             "Loaded {} civilizations / {} leaders from your install. "

@@ -978,13 +978,19 @@ def icons_fragment(c, icon_files):
     """(atlas rows XML, definition rows XML) for one leader's custom icon.
     icon_files: (size, texture name) pairs; Filename is the name of the
     texture inside the cooked .blp, not a file path."""
+    # an atlas may hold several icons in a row (c["icon_defs"]: [(icon
+    # name, index)], e.g. a unique unit's portrait and icon)
+    defs = c.get("icon_defs") or [(c["icon_name"], 0)]
     atlas_rows = "\n".join(
-        '    <Row Name="{atlas}" IconSize="{size}" IconsPerRow="1" '
+        '    <Row Name="{atlas}" IconSize="{size}" IconsPerRow="{per_row}" '
         'IconsPerColumn="1" Filename="{texture}"/>'.format(
-            atlas=c["icon_atlas"], size=size, texture=texture)
+            atlas=c["icon_atlas"], size=size, texture=texture,
+            per_row=len(defs))
         for size, texture in icon_files)
-    def_row = ('    <Row Name="{icon}" Atlas="{atlas}" Index="0"/>'
-               .format(icon=c["icon_name"], atlas=c["icon_atlas"]))
+    def_row = "\n".join(
+        '    <Row Name="{icon}" Atlas="{atlas}" Index="{index}"/>'.format(
+            icon=name, atlas=c["icon_atlas"], index=index)
+        for name, index in defs)
     return atlas_rows, def_row
 
 

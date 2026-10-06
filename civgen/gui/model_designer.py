@@ -9,7 +9,9 @@ from tkinter import messagebox, ttk
 from ..unit_models import (SECTION_LABELS, model_sections, new_design,
                            normalize_design)
 from ..util import find_game_dir
+from . import theme
 from . import help_texts
+from .widgets import fit_to_screen
 from .widgets import HelpBox, ScrollFrame, add_tooltip
 
 ON_FOOT = "(on foot)"
@@ -36,7 +38,7 @@ class ModelDesigner(tk.Toplevel):
         outer = ttk.Frame(self, padding=10)
         outer.pack(fill="both", expand=True)
         ttk.Label(outer, text=HINT, wraplength=980, justify="left",
-                  foreground="gray25").pack(anchor="w", pady=(0, 2))
+                  foreground=theme.hint()).pack(anchor="w", pady=(0, 2))
         HelpBox(outer, help_texts.DESIGNER, wraplength=980).pack(
             anchor="w", pady=(0, 6))
         top = ttk.Frame(outer)
@@ -73,11 +75,14 @@ class ModelDesigner(tk.Toplevel):
         self._build_sections(sections)
 
         btns = ttk.Frame(outer)
-        btns.pack(anchor="e", pady=(10, 0))
+        # before everything else: kept in view on a small screen
+        btns.pack(side="bottom", anchor="e", pady=(10, 0),
+                  before=outer.winfo_children()[0])
         ttk.Button(btns, text="OK", command=self.on_ok).pack(side="left",
                                                              padx=4)
         ttk.Button(btns, text="Cancel", command=self.destroy).pack(
             side="left", padx=4)
+        fit_to_screen(self)
         self.grab_set()
         self.bind("<Escape>", lambda e: self.destroy())
 
@@ -138,7 +143,7 @@ class ModelDesigner(tk.Toplevel):
                                             "tint": "", "bins": []})).grid(
                 row=999, column=0, sticky="w", pady=(4, 0))
         if not sections:
-            ttk.Label(inner, foreground="gray25", text=(
+            ttk.Label(inner, foreground=theme.hint(), text=(
                 "(pick the model to start from and press 'Load its parts' - "
                 "the game must be installed)")).grid(row=0, column=0,
                                                      sticky="w")

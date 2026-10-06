@@ -10,6 +10,7 @@ from ..landmarks import (ERA_LABELS, ERAS, building_districts,
                          new_district_art, variant_key, variant_label)
 from ..landmarks import _text as variant_text
 from ..util import find_game_dir
+from . import theme
 from . import help_texts
 from .widgets import HelpBox, ScrollFrame, TypeCombo, add_tooltip
 
@@ -58,10 +59,10 @@ class BuildingModelFrame(ttk.Frame):
         self.look_from.grid(row=1, column=1, sticky="w", **pad)
         add_tooltip(self.look_from, "Any building: yours uses its meshes.")
         ttk.Label(self, text="(empty: the building it copies)",
-                  foreground="gray25").grid(row=1, column=2, sticky="w",
+                  foreground=theme.hint()).grid(row=1, column=2, sticky="w",
                                             **pad)
         self.info = ttk.Label(self, wraplength=640, justify="left",
-                              foreground="gray25")
+                              foreground=theme.hint())
         self.info.grid(row=2, column=1, columnspan=2, sticky="w", **pad)
         label = ttk.Label(self, text="Drawn in the place of (?)")
         label.grid(row=3, column=0, sticky="w", **pad)
@@ -73,7 +74,7 @@ class BuildingModelFrame(ttk.Frame):
                                   width=44)
         self.stand_in.grid(row=3, column=1, sticky="w", **pad)
         ttk.Label(self, text="(where it stands; if both are built they "
-                             "overlap)", foreground="gray25").grid(
+                             "overlap)", foreground=theme.hint()).grid(
             row=3, column=2, sticky="w", **pad)
 
         box = ttk.LabelFrame(self, text="Own meshes", padding=(8, 4))
@@ -90,7 +91,7 @@ class BuildingModelFrame(ttk.Frame):
             self.own.set(True))).grid(row=99, column=0, sticky="w",
                                       pady=(6, 0))
         if not app.data.meshes["building"]:
-            ttk.Label(self, foreground="gray25", text=(
+            ttk.Label(self, foreground=theme.hint(), text=(
                 "(load the game cache - with the game installed - to list "
                 "the meshes)")).grid(row=5, column=0, columnspan=3,
                                      sticky="w", **pad)
@@ -200,7 +201,7 @@ class DistrictModelFrame(ttk.Frame):
                                    art.get("look_from", ""), width=36)
         self.look_from.pack(side="left", padx=6)
         ttk.Label(look, text="(empty: the district it copies)",
-                  foreground="gray25").pack(side="left")
+                  foreground=theme.hint()).pack(side="left")
         self.look_from.var.trace_add("write", lambda *_: self.refresh())
         helper = ttk.Frame(self)
         helper.grid(row=2, column=0, columnspan=3, sticky="w", pady=(0, 6))
@@ -244,7 +245,7 @@ class DistrictModelFrame(ttk.Frame):
         self.ground_vars, self.building_vars = {}, {}
         landmark = merged_landmark(find_game_dir(), base) if base else None
         if landmark is None:
-            ttk.Label(inner, foreground="gray25", text=(
+            ttk.Label(inner, foreground=theme.hint(), text=(
                 "(pick the district it copies on the General tab, or the "
                 "district it looks like above - the game must be "
                 "installed)" if not base else
@@ -276,7 +277,7 @@ class DistrictModelFrame(ttk.Frame):
                          values=building_values).grid(row=r, column=1,
                                                       sticky="w", pady=1)
             ttk.Label(inner, text="now: " + ", ".join(meshes),
-                      foreground="gray25").grid(row=r, column=2,
+                      foreground=theme.hint()).grid(row=r, column=2,
                                                 sticky="w", padx=6)
             self.building_vars[b] = var
             r += 1
@@ -295,7 +296,7 @@ class DistrictModelFrame(ttk.Frame):
                          values=ground_values).grid(row=r, column=1,
                                                     sticky="w", pady=1)
             ttk.Label(inner, text="now: " + variant_text(v, "Asset"),
-                      foreground="gray25").grid(row=r, column=2,
+                      foreground=theme.hint()).grid(row=r, column=2,
                                                 sticky="w", padx=6)
             self.ground_vars[key] = var
             r += 1
@@ -374,7 +375,7 @@ class ImprovementModelFrame(ttk.Frame):
             self, app.data.type_choices("improvement"),
             (art or {}).get("look_from", ""), width=40)
         self.look_from.grid(row=2, column=1, sticky="w", padx=6)
-        self.info = ttk.Label(self, foreground="gray25")
+        self.info = ttk.Label(self, foreground=theme.hint())
         self.info.grid(row=2, column=2, sticky="w")
         self.look_from.var.trace_add("write", lambda *_: self.refresh())
         self.refresh()

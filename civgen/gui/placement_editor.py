@@ -5,6 +5,7 @@ from tkinter import ttk
 
 from ..uniques import IMPROVEMENT_PLACEMENT_DEFAULTS, PLACEMENT_DEFAULTS
 from ..util import type_display_name
+from . import theme
 from .widgets import HelpBox, ScrollFrame, add_tooltip
 
 # used when no game cache is loaded
@@ -57,7 +58,7 @@ class PlacementFrame(ttk.Frame):
             self, variable=self.own, command=self._own_toggled,
             text="Own placement rules (otherwise the copied district's)")
         self.own_check.grid(row=2, column=0, columnspan=2, sticky="w", **pad)
-        self.info = ttk.Label(self, foreground="gray25", wraplength=760,
+        self.info = ttk.Label(self, foreground=theme.hint(), wraplength=760,
                               justify="left")
         self.info.grid(row=3, column=0, columnspan=2, sticky="w", **pad)
 
@@ -237,7 +238,7 @@ class ImprovementPlacementFrame(PlacementFrame):
             self, variable=self.own, command=self._own_toggled,
             text="Own placement rules (otherwise the copied improvement's)")
         self.own_check.grid(row=2, column=0, columnspan=2, sticky="w", **pad)
-        self.info = ttk.Label(self, foreground="gray25", wraplength=760,
+        self.info = ttk.Label(self, foreground=theme.hint(), wraplength=760,
                               justify="left")
         self.info.grid(row=3, column=0, columnspan=2, sticky="w", **pad)
         terrains = [t for t, _ in app.data.type_choices("terrain")

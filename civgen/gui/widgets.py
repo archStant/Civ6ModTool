@@ -1,6 +1,7 @@
 """Reusable dialogs and widgets."""
 
 import os
+import sys
 import re
 import threading
 import time
@@ -9,6 +10,7 @@ import tkinter as tk
 from tkinter import ttk, colorchooser, filedialog
 
 from ..art import default_image_crop, fitted_portrait, make_circle_icon
+from . import theme
 
 
 class IconCropDialog(tk.Toplevel):
@@ -231,7 +233,7 @@ class BusyDialog(tk.Toplevel):
         self.bar = ttk.Progressbar(body, mode="indeterminate", length=380)
         self.bar.pack(fill="x", pady=(10, 4))
         self.bar.start(12)
-        self.elapsed_label = ttk.Label(body, text="", foreground="gray35")
+        self.elapsed_label = ttk.Label(body, text="", foreground=theme.hint())
         self.elapsed_label.pack(anchor="e")
 
         self.update_idletasks()         # center over the parent
@@ -307,7 +309,8 @@ class Tooltip:
         self.tip.wm_overrideredirect(True)
         self.tip.wm_geometry("+{}+{}".format(x + 16, y + 16))
         tk.Label(self.tip, text=self.text, justify="left",
-                 background="#ffffe0", foreground="black", relief="solid",
+                 background=theme.color("tooltip"),
+                 foreground=theme.color("tooltip_fg"), relief="solid",
                  borderwidth=1, padx=6, pady=3).pack()
 
     def hide(self):
@@ -321,29 +324,108 @@ class Tooltip:
 
 
 class ScrollFrame(ttk.Frame):
-    """A vertically scrollable frame; put widgets into .inner."""
+    """A vertically scrollable frame; put widgets into .inner. height:
+    the visible height, or None: as tall as the content (it only scrolls
+    when its window is made smaller, see fit_to_screen)."""
 
     def __init__(self, parent, height=560):
         super().__init__(parent)
-        self.canvas = tk.Canvas(self, height=height, highlightthickness=0,
-                                borderwidth=0)
-        bar = ttk.Scrollbar(self, orient="vertical",
-                            command=self.canvas.yview)
+        self.natural = height is None
+        self.canvas = tk.Canvas(self, height=height or 1,
+                                highlightthickness=0, borderwidth=0)
+        # scroll bars, shown only while there is more to see; packed
+        # before the canvas, so a small window squeezes the canvas only
+        self.vbar = ttk.Scrollbar(self, orient="vertical",
+                                  command=self.canvas.yview)
+        self.hbar = ttk.Scrollbar(self, orient="horizontal",
+                                  command=self.canvas.xview)
         self.inner = ttk.Frame(self.canvas, padding=(10, 6))
-        self.inner.bind("<Configure>", lambda e: self.canvas.configure(
-            scrollregion=self.canvas.bbox("all"),
-            width=self.inner.winfo_reqwidth()))
+        self.inner.bind("<Configure>", self._on_inner_configure)
         self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
-        self.canvas.configure(yscrollcommand=bar.set)
+        self.canvas.configure(
+            yscrollcommand=lambda a, b: self._bar(self.vbar, "right", "y",
+                                                  a, b),
+            xscrollcommand=lambda a, b: self._bar(self.hbar, "bottom", "x",
+                                                  a, b))
         self.canvas.pack(side="left", fill="both", expand=True)
-        bar.pack(side="right", fill="y")
-        # scroll with the mouse wheel while the pointer is over the frame
-        self.bind("<Enter>", lambda e: self.bind_all(
-            "<MouseWheel>", self._on_wheel))
-        self.bind("<Leave>", lambda e: self.unbind_all("<MouseWheel>"))
+        # the mouse wheel scrolls the frame under the pointer
+        self.bind_all("<MouseWheel>", _wheel_router)
 
-    def _on_wheel(self, event):
-        self.canvas.yview_scroll(int(-event.delta / 120), "units")
+    def _on_inner_configure(self, _event=None):
+        size = {"scrollregion": self.canvas.bbox("all"),
+                "width": self.inner.winfo_reqwidth()}
+        if self.natural:
+            size["height"] = self.inner.winfo_reqheight()
+        self.canvas.configure(**size)
+
+    def _bar(self, bar, side, fill, first, last):
+        """Show bar only while part of the content is hidden."""
+        needed = float(first) > 0 or float(last) < 1
+        if needed and not bar.winfo_ismapped():
+            bar.pack(side=side, fill=fill, before=self.canvas)
+        elif not needed and bar.winfo_ismapped():
+            bar.pack_forget()
+        bar.set(first, last)
+
+    def can_scroll(self):
+        first, last = self.canvas.yview()
+        return first > 0 or last < 1
+
+
+# widgets that scroll by themselves on the mouse wheel
+SELF_SCROLLING = ("Text", "Listbox", "Treeview", "TCombobox")
+
+
+def _wheel_router(event):
+    """Mouse wheel: scroll the innermost ScrollFrame under the pointer
+    that has more to show."""
+    try:
+        widget = event.widget.winfo_containing(event.x_root, event.y_root)
+    except (KeyError, tk.TclError):     # e.g. over a combobox's popdown
+        return
+    if widget is None or widget.winfo_class() in SELF_SCROLLING:
+        return
+    while widget is not None:
+        if isinstance(widget, ScrollFrame) and widget.can_scroll():
+            widget.canvas.yview_scroll(int(-event.delta / 120), "units")
+            return
+        widget = widget.master
+
+
+def work_area(window):
+    """(left, top, right, bottom) of the screen minus the taskbar."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            rect = wintypes.RECT()
+            if ctypes.windll.user32.SystemParametersInfoW(
+                    0x30, 0, ctypes.byref(rect), 0):   # SPI_GETWORKAREA
+                return rect.left, rect.top, rect.right, rect.bottom
+        except Exception:
+            pass
+    return 0, 0, window.winfo_screenwidth(), window.winfo_screenheight()
+
+
+def fit_to_screen(window):
+    """Size and place a dialog so it is all on screen: no larger than the
+    work area (its scrollable parts shrink and scroll instead), centred
+    on it. A dialog that had to shrink can be resized."""
+    window.update_idletasks()
+    left, top, right, bottom = work_area(window)
+    scale = float(window.tk.call("tk", "scaling")) / 1.33
+    title_bar = int(36 * scale)         # the frame Windows adds
+    avail_w = right - left - int(16 * scale)
+    avail_h = bottom - top - title_bar - int(8 * scale)
+    width, height = window.winfo_reqwidth(), window.winfo_reqheight()
+    if width > avail_w or height > avail_h:
+        width, height = min(width, avail_w), min(height, avail_h)
+        window.resizable(True, True)
+        window.minsize(min(width, int(400 * scale)),
+                       min(height, int(300 * scale)))
+    x = left + max(0, (right - left - width) // 2)
+    y = top + max(0, (bottom - top - title_bar - height) // 2)
+    window.geometry("{}x{}+{}+{}".format(width, height, x, y))
 
 
 def add_tooltip(widget, text):
@@ -495,3 +577,141 @@ class ImagePreview(ttk.Label):
         except Exception as exc:        # unreadable image
             text = "(cannot preview: {})".format(exc)
         self.configure(image=self._photo or "", text=text)
+
+
+# ---------------------------------------------------------------------------
+# Icons in text: buttons inserting the game's [ICON_...] tags
+# ---------------------------------------------------------------------------
+
+# the yields, shown as colored chips: (tag, label, chip color)
+YIELD_CHIPS = [
+    ("[ICON_Food]", "Food", "#6aa84f"),
+    ("[ICON_Production]", "Production", "#c97a32"),
+    ("[ICON_Gold]", "Gold", "#d4a72c"),
+    ("[ICON_Science]", "Science", "#4a86c5"),
+    ("[ICON_Culture]", "Culture", "#9b5fc0"),
+    ("[ICON_Faith]", "Faith", "#8fb3c9"),
+]
+# the others, in the "More icons" menu: (group, [(tag, label)])
+TEXT_ICONS = [
+    ("Yields and resources", [
+        ("[ICON_Food]", "Food"), ("[ICON_Production]", "Production"),
+        ("[ICON_Gold]", "Gold"), ("[ICON_Science]", "Science"),
+        ("[ICON_Culture]", "Culture"), ("[ICON_Faith]", "Faith"),
+        ("[ICON_Tourism]", "Tourism"),
+        ("[ICON_Favor]", "Diplomatic Favor (Gathering Storm)"),
+        ("[ICON_Power]", "Power (Gathering Storm)")]),
+    ("Cities", [
+        ("[ICON_Citizen]", "Citizen"), ("[ICON_Housing]", "Housing"),
+        ("[ICON_Amenities]", "Amenities"), ("[ICON_Capital]", "Capital"),
+        ("[ICON_TradeRoute]", "Trade route"),
+        ("[ICON_TradingPost]", "Trading post"),
+        ("[ICON_Envoy]", "Envoy"),
+        ("[ICON_Governor]", "Governor (Rise and Fall)"),
+        ("[ICON_Religion]", "Religion")]),
+    ("Combat", [
+        ("[ICON_Strength]", "Combat strength"),
+        ("[ICON_Ranged]", "Ranged strength"), ("[ICON_Range]", "Range"),
+        ("[ICON_Bombard]", "Bombard strength"),
+        ("[ICON_Movement]", "Movement")]),
+    ("Great people", [
+        ("[ICON_GreatPerson]", "Great person (any)"),
+        ("[ICON_GreatGeneral]", "Great General"),
+        ("[ICON_GreatAdmiral]", "Great Admiral"),
+        ("[ICON_GreatEngineer]", "Great Engineer"),
+        ("[ICON_GreatMerchant]", "Great Merchant"),
+        ("[ICON_GreatProphet]", "Great Prophet"),
+        ("[ICON_GreatScientist]", "Great Scientist"),
+        ("[ICON_GreatWriter]", "Great Writer"),
+        ("[ICON_GreatArtist]", "Great Artist"),
+        ("[ICON_GreatMusician]", "Great Musician")]),
+    ("Great works", [
+        ("[ICON_GreatWork_Writing]", "Writing"),
+        ("[ICON_GreatWork_Landscape]", "Art"),
+        ("[ICON_GreatWork_Sculpture]", "Sculpture"),
+        ("[ICON_GreatWork_Music]", "Music"),
+        ("[ICON_GreatWork_Relic]", "Relic"),
+        ("[ICON_GreatWork_Artifact]", "Artifact")]),
+    ("Other", [
+        ("[ICON_Bullet]", "Bullet (list item)"), ("[ICON_Turn]", "Turns"),
+        ("[ICON_TechBoosted]", "Eureka (technology boost)"),
+        ("[ICON_CivicBoosted]", "Inspiration (civic boost)")]),
+]
+
+
+def insert_tag(widget, tag):
+    """Insert tag at the cursor of a Text or Entry widget (replacing a
+    selection) and put the focus back there."""
+    try:
+        if isinstance(widget, tk.Text):
+            if widget.tag_ranges("sel"):
+                widget.delete("sel.first", "sel.last")
+            widget.insert("insert", tag)
+        else:
+            if widget.selection_present():
+                widget.delete("sel.first", "sel.last")
+            widget.insert("insert", tag)
+        widget.focus_set()
+    except tk.TclError:                 # read-only or gone
+        pass
+
+
+def icon_menu(parent, target):
+    """A menu of every TEXT_ICONS tag, by group, inserting into target."""
+    menu = tk.Menu(parent, tearoff=False)
+    for group, icons in TEXT_ICONS:
+        sub = tk.Menu(menu, tearoff=False)
+        for tag, label in icons:
+            sub.add_command(label="{}   {}".format(label, tag),
+                            command=lambda t=tag: insert_tag(target, t))
+        menu.add_cascade(label=group, menu=sub)
+    return menu
+
+
+class IconBar(ttk.Frame):
+    """Buttons inserting icon tags into a text field: a chip per yield
+    and a "More icons" menu. The game shows the tags as its icons."""
+
+    def __init__(self, parent, target):
+        super().__init__(parent)
+        label = ttk.Label(self, text="Insert icon:",
+                          foreground=theme.hint())
+        label.pack(side="left", padx=(0, 4))
+        add_tooltip(label, "Puts the game's icon tag at the cursor - e.g. "
+                    "+2 [ICON_Faith] Faith shows the Faith icon in game.")
+        for tag, text, color in YIELD_CHIPS:
+            chip = tk.Label(self, text=text, background=color,
+                            foreground="black", padx=6, pady=0,
+                            cursor="hand2", font=("TkDefaultFont", 8))
+            chip.pack(side="left", padx=1)
+            chip.bind("<Button-1>", lambda e, t=tag: insert_tag(target, t))
+            add_tooltip(chip, tag)
+        more = ttk.Menubutton(self, text="More icons ▾", style="Toolbutton")
+        more["menu"] = icon_menu(more, target)
+        more.pack(side="left", padx=(6, 0))
+
+
+def icon_text(parent, **options):
+    """A Text with an IconBar under it: (frame to place, Text)."""
+    frame = ttk.Frame(parent)
+    text = tk.Text(frame, **options)
+    text.pack(side="top", fill="both", expand=True)
+    IconBar(frame, text).pack(side="top", anchor="w", pady=(2, 0))
+    return frame, text
+
+
+def install_icon_context_menu(root):
+    """Right-click in any text field (Text or ttk Entry): an "Insert
+    icon" menu."""
+    def popup(event):
+        widget = event.widget
+        if str(widget.cget("state")) in ("disabled", "readonly"):
+            return
+        menu = tk.Menu(widget, tearoff=False)
+        menu.add_cascade(label="Insert icon", menu=icon_menu(menu, widget))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+    for cls in ("Text", "TEntry"):
+        root.bind_class(cls, "<Button-3>", popup, add="+")
