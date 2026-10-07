@@ -14,6 +14,7 @@ import shutil
 import sqlite3
 import tempfile
 import unittest
+import uuid
 import xml.etree.ElementTree as ET
 import zlib
 
@@ -462,13 +463,13 @@ class GeneratedModTest(unittest.TestCase):
             "'ICON_IMPROVEMENT_TST_SACRED_GROVE'").fetchall(), [(7,)])
 
     def test_xml_files_parse(self):
-        files = ["MyLeader.modinfo", "TestMod.dep",
+        files = ["TestMod.modinfo", "TestMod.dep",
                  "Config/NewLeader_Colors.xml"]
         files += ["ArtDefs/" + f for f in os.listdir(
             os.path.join(self.mod_dir, "ArtDefs"))]
         for rel in files:
             ET.fromstring(read(self.mod_dir, rel).encode("utf-8"))
-        modinfo = ET.fromstring(read(self.mod_dir, "MyLeader.modinfo"))
+        modinfo = ET.fromstring(read(self.mod_dir, "TestMod.modinfo"))
         listed = {f.text for f in modinfo.iter("File")}
         for rel in files[1:] + [modbuild.XP2_FILE, modbuild.ICONS_SQL_FILE]:
             self.assertIn(rel, listed)
@@ -1149,3 +1150,145 @@ class UnitAtlasTest(unittest.TestCase):
         self.assertIn('IconsPerRow="1"', atlas)
         self.assertIn('Name="ICON_BUILDING_Z" Atlas="ICON_ATLAS_BUILDING_Z" '
                       'Index="0"', defs)
+
+
+class WorkshopTest(unittest.TestCase):
+    """Preparing a mod for the SDK's Steam Workshop uploader."""
+
+    def setUp(self):
+        from civgen import workshop
+        self.ws = workshop
+        self.leaders, self.civs = sample_project()
+        self.tmp = tempfile.mkdtemp(prefix="civgen_ws_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_description(self):
+        self.civs[0]["uniques"][1]["desc"] = "+4 [ICON_Faith] Faith."
+        text = self.ws.generated_description("Amazons", self.civs,
+                                             self.leaders)
+        self.assertLessEqual(len(text), self.ws.MAX_DESCRIPTION)
+        self.assertNotIn("[ICON_", text)
+        self.assertIn("+4 Faith.", text)
+        for name in ["Amazons", "Hippolyta", "Antiope", "Amazon Warrior",
+                     "Sacred Grove"]:
+            self.assertIn(name, text)
+        plain = self.ws.plain_text(text)
+        self.assertNotIn("[b]", plain)
+        self.assertIn("- Amazon Warrior", plain)
+
+    def test_preview(self):
+        from PIL import Image
+        self.civs[0]["icon_path"] = MOMENT_IMAGE
+        path = self.ws.make_preview(os.path.join(self.tmp, "p.jpg"),
+                                    "Amazons", self.civs, self.leaders)
+        self.assertLess(os.path.getsize(path), self.ws.MAX_PREVIEW_BYTES)
+        self.assertEqual(Image.open(path).size, (512, 512))
+
+    def test_busy_preview(self):
+        from PIL import Image
+        self.civs[0]["icon_path"] = MOMENT_IMAGE
+        self.civs[0]["uniques"][0]["portrait_path"] = MOMENT_IMAGE
+        self.civs[0]["moment_illustrations"] = [
+            {"item": "UNIT_X", "path": MOMENT_IMAGE}]
+        self.leaders[0].update(load_fg_path=MOMENT_IMAGE,
+                               load_bg_default=True, load_bg_hue=40)
+        busy = self.ws.make_preview(os.path.join(self.tmp, "busy.jpg"),
+                                    "Amazons", self.civs, self.leaders,
+                                    style="busy")
+        simple = self.ws.make_preview(os.path.join(self.tmp, "simple.jpg"),
+                                      "Amazons", self.civs, self.leaders)
+        self.assertEqual(Image.open(busy).size, (512, 512))
+        self.assertLess(os.path.getsize(busy), self.ws.MAX_PREVIEW_BYTES)
+        self.assertNotEqual(open(busy, "rb").read(),
+                            open(simple, "rb").read())
+        # nothing of the project's own to show: the simple preview
+        leaders, civs = sample_project()
+        empty_busy = self.ws.make_preview(os.path.join(self.tmp, "e1.jpg"),
+                                          "X", civs, leaders, style="busy")
+        empty_simple = self.ws.make_preview(os.path.join(self.tmp, "e2.jpg"),
+                                            "X", civs, leaders)
+        self.assertEqual(open(empty_busy, "rb").read(),
+                         open(empty_simple, "rb").read())
+
+    def test_transparent_images(self):
+        """Transparent parts of the mod's images stay see-through in the
+        busy preview (moment cards get no frame behind them)."""
+        from PIL import Image, ImageDraw
+        cut = os.path.join(self.tmp, "cut.png")
+        img = Image.new("RGBA", (456, 332), (0, 0, 0, 0))
+        ImageDraw.Draw(img).ellipse((100, 50, 350, 300), fill=(255, 0, 0))
+        img.convert("P", palette=Image.ADAPTIVE).save(cut, transparency=0)
+        opaque = os.path.join(self.tmp, "opaque.png")
+        Image.new("RGB", (456, 332), (0, 0, 255)).save(opaque)
+        card = self.ws._card({"path": cut}, 200, 0)
+        self.assertEqual(card.getpixel((2, 2))[3], 0)     # no frame
+        card = self.ws._card({"path": opaque}, 200, 0)
+        self.assertEqual(card.getpixel((1, 1))[3], 255)   # framed photo
+        # a see-through background is laid over the backdrop, not black
+        bg = os.path.join(self.tmp, "bg.png")
+        Image.new("RGBA", (64, 64), (0, 0, 0, 0)).save(bg)
+        self.leaders[0].update(load_bg_path=bg, load_fg_path=MOMENT_IMAGE)
+        path = self.ws.make_preview(os.path.join(self.tmp, "b.jpg"), "T",
+                                    self.civs, self.leaders, style="busy")
+        self.assertGreater(sum(Image.open(path).getpixel((5, 5))), 40)
+
+    def test_settings(self):
+        w = self.ws.normalize_workshop({"version": "x", "visibility": "?",
+                                        "junk": 1})
+        self.assertEqual((w["version"], w["visibility"]), (1, "Public"))
+        self.assertEqual(w["preview_style"], "simple")
+        self.assertEqual(self.ws.normalize_workshop(
+            {"preview_style": "busy"})["preview_style"], "busy")
+        self.assertNotIn("junk", w)
+        values = self.ws.resolved({}, "My Mod", self.civs, self.leaders)
+        self.assertEqual(values["title"], "My Mod")
+        self.assertTrue(values["description"].startswith("[h1]My Mod"))
+        self.assertEqual(self.ws.workshop_url(
+            "https://steamcommunity.com/sharedfiles/filedetails/?id=123456789"),
+            self.ws.WORKSHOP_URL.format("123456789"))
+        self.assertIsNone(self.ws.workshop_url("not yet"))
+
+    def test_modinfo(self):
+        modinfo = modbuild.build_modinfo("M", "d", "g", False, None, [],
+                                         version=3, authors="Me")
+        root = ET.fromstring(modinfo)
+        self.assertEqual(root.get("version"), "3")
+        self.assertEqual(root.findtext("Properties/Authors"), "Me")
+        self.assertEqual(root.findtext("Properties/AffectsSavedGames"), "1")
+
+    def test_check_mod(self):
+        mod = os.path.join(self.tmp, "Mod")
+        os.makedirs(mod)
+        open(os.path.join(mod, "Old.modinfo"), "w").close()
+        guid = str(uuid.uuid4())
+        with open(os.path.join(mod, "Mod.modinfo"), "w") as fh:
+            fh.write(modbuild.build_modinfo("Mod", "d", guid, False, None,
+                                            ["a.sql"]))
+        os.remove(os.path.join(mod, "Old.modinfo"))
+        # every file the .modinfo's actions load
+        for rel in ["a.sql"] + [f.text for f in ET.parse(os.path.join(
+                mod, "Mod.modinfo")).getroot().iter("File")]:
+            os.makedirs(os.path.dirname(os.path.join(mod, rel)),
+                        exist_ok=True)
+            open(os.path.join(mod, rel), "w").close()
+        with open(os.path.join(mod, self.ws.STAMP_FILE), "w") as fh:
+            fh.write("abc")
+        preview = self.ws.make_preview(os.path.join(self.tmp, "p.jpg"),
+                                       "Mod", [], [])
+        values = {"title": "Mod", "description": "Text",
+                  "preview_path": preview}
+        results = self.ws.check_mod(mod, values, stamp="abc")
+        self.assertTrue(all(ok for ok, _ in results), results)
+
+        def failed(**changes):
+            return [m for ok, m in self.ws.check_mod(
+                mod, dict(values, **changes), stamp="abc") if not ok]
+        self.assertTrue(failed(title="x" * 129))
+        self.assertTrue(failed(preview_path=""))
+        self.assertEqual(len([m for ok, m in self.ws.check_mod(
+            mod, values, stamp="new") if not ok]), 1)   # out of date
+        open(os.path.join(mod, "art.zip"), "w").close()
+        self.assertTrue(any("archives" in m for m in failed()))
+        os.remove(os.path.join(mod, "art.zip"))
+        os.remove(os.path.join(mod, "a.sql"))
+        self.assertTrue(any("Missing" in m for m in failed()))

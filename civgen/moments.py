@@ -5,7 +5,7 @@ engine's "first unique unit / building / district / improvement" moments
 take their picture from MomentIllustrations, keyed by the item's type. A
 civilization spec holds them in moment_illustrations: [{"item":
 "UNIT_X", "path": image, "mask": bool (fade frame from
-assets/mask_historical.png), "half": bool (50% transparent), "sepia":
+assets/mask_historical.png), "half": bool (75% transparent), "sepia":
 bool (old-photo brown tint)}, ...]. (Older projects kept them on
 leaders; see move_to_civs.)
 """

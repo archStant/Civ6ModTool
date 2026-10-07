@@ -25,11 +25,15 @@ from ..civs import (CIV_BADGE_COLOR, civ_icon_preview, civ_slug,
 from ..uniques import KINDS, MAIN_TABLES
 from ..modbuild import prepare_project, write_mod
 from ..moments import move_to_civs as move_moments_to_civs
+from ..workshop import (UPLOADER_EXE, build_stamp, find_uploader,
+                        new_workshop_spec, normalize_workshop, plain_text,
+                        resolved)
 from ..project import (PROJECT_MAGIC, PROJECT_VERSION, export_leaders,
                        import_leaders)
 from . import theme
 from .widgets import install_icon_context_menu
 from .widgets import BusyDialog, Tooltip, add_tooltip
+from .workshop_dialog import WorkshopDialog
 from .leader_editor import LeaderEditor
 from .civ_editor import CivEditor
 
@@ -90,6 +94,8 @@ class GeneratorApp(tk.Tk):
             "guid": str(uuid.uuid4()),
             "leaders": [],
             "civs": [],
+            # Steam Workshop details (see workshop.py)
+            "workshop": new_workshop_spec(),
         }
 
     def type_prefix(self):
@@ -212,6 +218,11 @@ class GeneratorApp(tk.Tk):
         self.generate_btn.pack(side="right", padx=(6, 2))
         add_tooltip(self.generate_btn, "Write the mod into the output "
                     "folder (F5)")
+        publish = ttk.Button(toolbar, text="Publish to Workshop...",
+                             style="Toolbutton", command=self.on_publish)
+        publish.pack(side="right", padx=1)
+        add_tooltip(publish, "Check the generated mod and publish it on the "
+                    "Steam Workshop with the Civ VI SDK's uploader")
         self.fullscreen_btn = tool("Fullscreen", self.toggle_fullscreen,
                                    "Fill the whole screen (F11; Esc "
                                    "leaves it)")
@@ -402,7 +413,8 @@ class GeneratorApp(tk.Tk):
         return (self.mod_name_var.get().strip() or "Alternate Leaders",
                 self.type_prefix(), self.out_var.get().strip(),
                 copy.deepcopy(self.project["leaders"]),
-                copy.deepcopy(self.project["civs"]))
+                copy.deepcopy(self.project["civs"]),
+                copy.deepcopy(self.project.get("workshop")))
 
     def _mark_saved(self):
         """The current state is what is on disk (or a fresh project)."""
@@ -802,6 +814,7 @@ class GeneratorApp(tk.Tk):
                                      "entry.")
                 return
         project.setdefault("civs", [])      # projects before version 3
+        project["workshop"] = normalize_workshop(project.get("workshop"))
         if not isinstance(project["civs"], list) or not all(
                 isinstance(c, dict) and "name" in c for c in project["civs"]):
             messagebox.showerror("Invalid project file",
@@ -930,16 +943,18 @@ class GeneratorApp(tk.Tk):
 
     # -- generation -----------------------------------------------------------------
 
-    def on_generate(self):
+    def on_generate(self, ask_open=True):
+        """Generate the mod. ask_open: offer to open its folder after.
+        Returns True when the mod was written."""
         mod_name = self.mod_name_var.get().strip() or "Alternate Leaders"
         out_root = self.out_var.get().strip()
         if not out_root:
             messagebox.showwarning("Missing input", "Choose an output folder.")
-            return
+            return False
         if not self.project["leaders"]:
             messagebox.showwarning("No leaders",
                                    "Add at least one leader to the project.")
-            return
+            return False
 
         # 1) validate everything up front; collect every problem
         civs, ctxs, errors = prepare_project(
@@ -948,7 +963,7 @@ class GeneratorApp(tk.Tk):
         if errors:
             messagebox.showwarning("Problems found",
                                    "\n\n".join(errors))
-            return
+            return False
         existing = ["{} ({})".format(c["name"], c["slug"])
                     for c in civs + ctxs if c["exists_in_game"]]
         if existing and not messagebox.askyesno(
@@ -960,7 +975,7 @@ class GeneratorApp(tk.Tk):
                 "mod defines them, the two mods will conflict.\n\n"
                 "Generate the mod anyway?".format("\n".join(existing)),
                 icon="warning"):
-            return
+            return False
 
         # 2) prepare and cook art (falls back to inherited art on failure)
         folder = safe_folder_name(mod_name)
@@ -973,7 +988,7 @@ class GeneratorApp(tk.Tk):
             shutil.rmtree(os.path.join(mod_dir, "Art"), ignore_errors=True)
         except OSError as exc:
             messagebox.showerror("Could not create mod folder", str(exc))
-            return
+            return False
 
         # Reuse the project's mod id so re-generating updates the same mod
         # entry in Additional Content instead of creating a duplicate.
@@ -989,12 +1004,18 @@ class GeneratorApp(tk.Tk):
         # 3) convert, cook and write in a thread behind a progress window
         busy = BusyDialog(self, "Generating mod")
         try:
+            publish, stamp = self.publish_values(), self.build_stamp()
             icon_count = busy.run(lambda: write_mod(
                 mod_name, ctxs, folder, mod_dir, guid, cooker, report,
-                busy.set_status, civs, self.data.type_name))
+                busy.set_status, civs, self.data.type_name,
+                {"version": publish["version"], "author": publish["author"],
+                 "description": plain_text(publish["description"])},
+                stamp))
         except OSError as exc:
             messagebox.showerror("Could not write mod", str(exc))
-            return
+            return False
+        if not ask_open:
+            return True
 
         warnings = [r for r in report if r.startswith("WARNING")]
         warning_text = ("\n\n{} warning(s):\n{}\n(details in README.txt)"
@@ -1008,6 +1029,65 @@ class GeneratorApp(tk.Tk):
                     mod_dir, len(report), len(civs), len(ctxs), icon_count,
                     warning_text)):
             self._open_folder(mod_dir)
+        return True
+
+    # -- Steam Workshop ---------------------------------------------------------
+
+    def mod_dir(self):
+        """Where the mod is generated."""
+        name = self.mod_name_var.get().strip() or "Alternate Leaders"
+        return os.path.join(self.out_var.get().strip(),
+                            safe_folder_name(name))
+
+    def civ_display_name(self, leader_spec):
+        """The name of a leader's civilization (a project's or the
+        game's)."""
+        civ_type = self.resolve_civ(leader_spec)
+        for spec in self.project["civs"]:
+            if civ_slug(spec, self.type_prefix()) == civ_type:
+                return spec.get("name") or civ_type
+        return self.data.type_name("civilization", civ_type) or civ_type
+
+    def publish_values(self):
+        """The Workshop settings with the empty ones filled in (see
+        workshop.resolved)."""
+        return resolved(self.project.get("workshop"),
+                        self.mod_name_var.get().strip() or
+                        "Alternate Leaders", self.project["civs"],
+                        self.project["leaders"], self.civ_display_name)
+
+    def build_stamp(self):
+        """A hash of everything the generated mod is made from."""
+        publish = self.publish_values()
+        return build_stamp(self._project_state()[:2],
+                           self.project["leaders"], self.project["civs"],
+                           publish["version"], publish["author"],
+                           publish["description"])
+
+    def uploader_path(self, ask=True):
+        """The SDK's Workshop uploader: remembered, found, or asked for."""
+        path = self.project.get("uploader_path")
+        if path and os.path.isfile(path):
+            return path
+        path = find_uploader()
+        if not path and ask:
+            messagebox.showinfo(
+                "Workshop uploader needed",
+                "Publishing uses the Steam Workshop uploader of the Civ VI "
+                "SDK ({}).\n\nInstall \"Sid Meier's Civilization VI "
+                "Development Tools\" from Steam (Library - Tools), or "
+                "locate the uploader in the next dialog.".format(
+                    UPLOADER_EXE), parent=self.focus_get() or self)
+            path = filedialog.askopenfilename(
+                title="Locate " + UPLOADER_EXE,
+                filetypes=[("Workshop uploader", UPLOADER_EXE),
+                           ("All files", "*.*")])
+        if path:
+            self.project["uploader_path"] = path
+        return path or None
+
+    def on_publish(self):
+        WorkshopDialog(self)
 
     def _cooker_path(self):
         """The SDK asset cooker: remembered, auto-detected, or asked for."""

@@ -21,7 +21,7 @@ HELP = (
 
 
 class MomentsFrame(ttk.Frame):
-    """A list of moment illustration rows (item, image, mask, 50%,
+    """A list of moment illustration rows (item, image, mask, 75%,
     sepia). items(): the item types offered in the item dropdowns."""
 
     def __init__(self, parent, entries, items, help_text=HELP):
@@ -72,7 +72,7 @@ class MomentsFrame(ttk.Frame):
             mask_check.state(["disabled"])
             mask_check.configure(text="Fade mask (assets/{} not found)"
                                  .format(MOMENT_MASK))
-        ttk.Checkbutton(frame, text="50% transparent",
+        ttk.Checkbutton(frame, text="75% transparent",
                         variable=row["half"]).pack(side="left", padx=(6, 0))
         ttk.Checkbutton(frame, text="Sepia",
                         variable=row["sepia"]).pack(side="left", padx=(6, 0))

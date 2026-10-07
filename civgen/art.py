@@ -463,7 +463,7 @@ def make_circle_icon(src, crop, border_color=DEFAULT_ICON_BORDER_COLOR,
 APP_ICON = "icon.png"
 DIPLO_BG_MASK = "mask.png"
 MOMENT_MASK = "mask_historical.png"
-MOMENT_HALF_OPACITY = 0.5
+MOMENT_HALF_OPACITY = 0.75
 # the loading background a leader can use instead of an image of its own
 DEFAULT_LOAD_BG = "bg_loading_default.png"
 
