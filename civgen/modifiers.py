@@ -651,3 +651,70 @@ def describe_effects(effects, name_of=lambda kind, t: type_display_name(t)):
     by newlines (the editors turn them into [NEWLINE])."""
     return "\n".join(with_icons(sentence(summary(e, name_of)))
                      for e in effects or [])
+
+
+# ---------------------------------------------------------------------------
+# The game's own modifiers (of an item a unique copies)
+# ---------------------------------------------------------------------------
+
+def _reqs_from_game(mod):
+    """The modifier's conditions as editor requirements ([{"preset",
+    "not", "value"}]), or None if a condition has no preset (or a set
+    needs only one of its conditions)."""
+    reqs = []
+    for key, target in (("subject_reqs", "subject"), ("owner_reqs", "owner")):
+        if mod[key] and mod.get("set_types", {}).get(key) not in (
+                None, "REQUIREMENTSET_TEST_ALL"):
+            return None                 # "any of": no preset for that
+        for req in mod[key]:
+            preset = next((p for p in REQUIREMENTS.values()
+                           if p.requirement_type == req["type"]
+                           and p.target == target
+                           and set(req["args"]) <= ({p.arg} if p.arg
+                                                    else set())), None)
+            if preset is None:
+                return None
+            reqs.append({"preset": preset.id, "not": req["inverse"],
+                         "value": req["args"].get(preset.arg, "")
+                         if preset.arg else ""})
+    return reqs
+
+
+def effect_from_game(mod):
+    """An editor effect (see new_effect) doing what the game's modifier
+    mod does (GameData.base_effects), or None when no template and
+    condition presets express it exactly."""
+    reqs = _reqs_from_game(mod)
+    if reqs is None:
+        return None
+    for t in TEMPLATES.values():
+        if (t.modifier_type != mod["modifier_type"] or
+                t.run_once != mod["run_once"] or
+                t.permanent != mod["permanent"]):
+            continue
+        names = {a.name for a in t.args}
+        needed = {a.name for a in t.args if a.kind != "text"}
+        if set(mod["args"]) <= names and needed <= set(mod["args"]):
+            return {"template": t.id,
+                    "args": {a.name: mod["args"].get(a.name, a.default)
+                             for a in t.args},
+                    "reqs": reqs}
+    return None
+
+
+def describe_game_modifier(mod, name_of=lambda kind, t: type_display_name(t)):
+    """One line for a game modifier: its effect's summary when it has a
+    template, else its modifier type and arguments made readable."""
+    effect = effect_from_game(mod)
+    if effect:
+        return summary(effect, name_of)
+    what = mod["modifier_type"]
+    for word in ("MODIFIER_", "PLAYER_", "SINGLE_"):
+        what = what.replace(word, "", 1) if what.startswith(word) else what
+    what = what.replace("_", " ").capitalize()
+    args = ", ".join("{} {}".format(k, type_display_name(v) if
+                                    str(v).isupper() else v)
+                     for k, v in sorted(mod["args"].items()))
+    conditions = " (with conditions)" if mod["subject_reqs"] or \
+        mod["owner_reqs"] else ""
+    return "{}{}{}".format(what, ": " + args if args else "", conditions)

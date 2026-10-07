@@ -349,7 +349,9 @@ class ScrollFrame(ttk.Frame):
                                                   a, b))
         self.canvas.pack(side="left", fill="both", expand=True)
         # the mouse wheel scrolls the frame under the pointer
-        self.bind_all("<MouseWheel>", _wheel_router)
+        # (through the main window, which outlives every frame)
+        self.bind_all("<MouseWheel>",
+                      lambda e, root=self._root(): _wheel_router(e, root))
 
     def _on_inner_configure(self, _event=None):
         size = {"scrollregion": self.canvas.bbox("all"),
@@ -376,11 +378,12 @@ class ScrollFrame(ttk.Frame):
 SELF_SCROLLING = ("Text", "Listbox", "Treeview", "TCombobox")
 
 
-def _wheel_router(event):
+def _wheel_router(event, root):
     """Mouse wheel: scroll the innermost ScrollFrame under the pointer
-    that has more to show."""
+    that has more to show. root: the main window - event.widget is only
+    a name for widgets Tk makes itself (a combobox's drop-down list)."""
     try:
-        widget = event.widget.winfo_containing(event.x_root, event.y_root)
+        widget = root.winfo_containing(event.x_root, event.y_root)
     except (KeyError, tk.TclError):     # e.g. over a combobox's popdown
         return
     if widget is None or widget.winfo_class() in SELF_SCROLLING:

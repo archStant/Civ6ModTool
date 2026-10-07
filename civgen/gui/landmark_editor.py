@@ -54,7 +54,7 @@ class BuildingModelFrame(ttk.Frame):
             anchor="w")
         ttk.Label(self, text="Looks like").grid(row=1, column=0, sticky="w",
                                                 **pad)
-        self.look_from = TypeCombo(self, app.data.type_choices("building"),
+        self.look_from = TypeCombo(self, app.data.unique_choices("building"),
                                    art.get("look_from", ""), width=44)
         self.look_from.grid(row=1, column=1, sticky="w", **pad)
         add_tooltip(self.look_from, "Any building: yours uses its meshes.")
@@ -131,7 +131,7 @@ class BuildingModelFrame(ttk.Frame):
         stand_in = self.stand_in.get_type()
         self.stand_in.set_choices(
             [(b, self.app.data.type_name("building", b)) for b in drawn] or
-            self.app.data.type_choices("building"))
+            self.app.data.unique_choices("building"))
         self.stand_in.set_type(stand_in)
         look = self.look_from.get_type() or self.base() or stand_in or \
             (drawn[0] if drawn else "")

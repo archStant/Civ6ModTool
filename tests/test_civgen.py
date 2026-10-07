@@ -568,6 +568,16 @@ class GameDataTest(unittest.TestCase):
         for p in modifiers.REQUIREMENTS.values():
             self.assertIn(p.requirement_type, known, p.id)
 
+    def test_no_wonders_to_copy(self):
+        data = game_data()
+        copyable = dict(data.unique_choices("building"))
+        self.assertIn("BUILDING_LIBRARY", copyable)
+        self.assertNotIn("BUILDING_PYRAMIDS", copyable)
+        # (effects may still refer to wonders)
+        self.assertIn("BUILDING_PYRAMIDS", dict(data.type_choices("building")))
+        self.assertEqual(data.unique_choices("unit"),
+                         data.type_choices("unit"))
+
     def test_clone_tables_exist(self):
         db = sqlite3.connect(CACHE)
         self.addCleanup(db.close)
@@ -1487,3 +1497,54 @@ class ReferenceTest(unittest.TestCase):
                         or not CACHE, errors)
         self.assertTrue(any("DISTRICT_TST_GONE" in e for e in errors)
                         or not CACHE, errors)
+
+
+@unittest.skipUnless(CACHE, "needs the game cache")
+class CopiedEffectsTest(unittest.TestCase):
+    """A unique's copied item: its yields, great person points and
+    effects, to copy into the editor or leave out."""
+
+    def test_numbers_and_effects(self):
+        data = game_data()
+        self.assertEqual(data.base_numbers("building", "BUILDING_MARKET",
+                                           "yields"), {"YIELD_GOLD": 2})
+        self.assertEqual(data.base_numbers("building", "BUILDING_MARKET",
+                                           "gpp"),
+                         {"GREAT_PERSON_CLASS_MERCHANT": 1})
+        mod, = [m for m in data.base_effects("building", "BUILDING_MARKET")
+                if m["id"] == "MARKET_TRADE_ROUTE_CAPACITY"]
+        effect = modifiers.effect_from_game(mod)
+        self.assertEqual((effect["template"], effect["args"]["Amount"]),
+                         ("trade_capacity", "1"))
+        self.assertEqual(modifiers.describe_game_modifier(mod),
+                         "+1 Trade Route capacity")
+        # one the editor cannot express is described, not converted
+        grant = [m for m in data.base_effects("building", "BUILDING_BARRACKS")
+                 if m["modifier_type"] ==
+                 "MODIFIER_SINGLE_CITY_GRANT_ABILITY_FOR_TRAINED_UNITS"][0]
+        self.assertIsNone(modifiers.effect_from_game(grant))
+        self.assertIn("AbilityType", modifiers.describe_game_modifier(grant))
+
+    def test_skipped_effects_are_not_copied(self):
+        u = uniques.new_unique_spec("building")
+        u.update(name="Bazaar", base="BUILDING_MARKET",
+                 skip_effects=["MARKET_TRADE_ROUTE_CAPACITY"])
+        ctx = uniques.normalize_unique(
+            u, {"name": "X", "slug": "CIVILIZATION_X"}, game_data(), "TST")
+        sql, _, _ = uniques.unique_sql(ctx, game_data().type_name)
+        self.assertIn("ModifierId NOT IN ('MARKET_TRADE_ROUTE_CAPACITY')",
+                      sql)
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        db = database("DebugGameplay.sqlite", tmp)
+        self.addCleanup(db.close)
+        db.executescript(
+            "INSERT INTO Types (Type, Kind) VALUES ('CIVILIZATION_X', "
+            "'KIND_CIVILIZATION');"
+            "INSERT INTO Civilizations (CivilizationType, Name, Description,"
+            " Adjective, StartingCivilizationLevelType) VALUES "
+            "('CIVILIZATION_X', 'X', 'X', 'X', 'CIVILIZATION_LEVEL_FULL_CIV');"
+            + sql)
+        self.assertEqual(db.execute(
+            "SELECT ModifierId FROM BuildingModifiers WHERE BuildingType = "
+            "'BUILDING_TST_BAZAAR'").fetchall(), [])

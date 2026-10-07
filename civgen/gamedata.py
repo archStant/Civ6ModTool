@@ -530,6 +530,17 @@ class GameData:
                 key=lambda kv: kv[1]["name"])]
         return self.types.get(kind) or []
 
+    def unique_choices(self, kind):
+        """type_choices for a unique to copy, replace or look like: no
+        wonders among the buildings (a wonder is one of a kind in the
+        world, and is built and drawn differently)."""
+        choices = self.type_choices(kind)
+        if kind == "building":
+            items = self.items.get("building") or {}
+            choices = [(t, n) for t, n in choices
+                       if not (items.get(t) or {}).get("IsWonder")]
+        return choices
+
     def type_name(self, kind, type_name):
         """English name of a type, or a readable stand-in."""
         if kind in ITEM_TABLES:
@@ -582,6 +593,87 @@ class GameData:
             "no_same_adjacent": not row.get("SameAdjacentValid", 1),
             "one_per_city": bool(row.get("OnePerCity")),
             "outside_territory": bool(row.get("CanBuildOutsideTerritory"))}
+
+    # kind -> (table linking an item to its modifiers, item column)
+    MODIFIER_LINKS = {"building": ("BuildingModifiers", "BuildingType"),
+                      "district": ("DistrictModifiers", "DistrictType"),
+                      "improvement": ("ImprovementModifiers",
+                                      "ImprovementType")}
+    # (kind, "yields" / "gpp") -> (table, item column, type column, amount)
+    NUMBER_TABLES = {
+        ("building", "yields"): ("Building_YieldChanges", "BuildingType",
+                                 "YieldType", "YieldChange"),
+        ("improvement", "yields"): ("Improvement_YieldChanges",
+                                    "ImprovementType", "YieldType",
+                                    "YieldChange"),
+        ("building", "gpp"): ("Building_GreatPersonPoints", "BuildingType",
+                              "GreatPersonClassType", "PointsPerTurn"),
+        ("district", "gpp"): ("District_GreatPersonPoints", "DistrictType",
+                              "GreatPersonClassType", "PointsPerTurn")}
+
+    def base_numbers(self, kind, item, key):
+        """{type: amount} of an item's yields ("yields") or great person
+        points ("gpp"), or {}."""
+        spec = self.NUMBER_TABLES.get((kind, key))
+        if not spec or not self.conn:
+            return {}
+        table, column, type_column, amount = spec
+        return {t: n for t, n in self._query(
+            'SELECT {}, {} FROM "{}" WHERE {} = ?'.format(
+                type_column, amount, table, column), (item,)) if n}
+
+    def base_effects(self, kind, item):
+        """The game's modifiers of an item: [{"id", "modifier_type",
+        "args" {name: value}, "run_once", "permanent", "subject_reqs",
+        "owner_reqs" ([] or None if the set cannot be read: [{"type",
+        "args", "inverse"}]), "set_types" {"subject", "owner"}}]."""
+        link = self.MODIFIER_LINKS.get(kind)
+        if not link or not self.conn:
+            return []
+        table, column = link
+        out = []
+        for (mod_id,) in self._query(
+                'SELECT ModifierId FROM "{}" WHERE {} = ? ORDER BY rowid'
+                .format(table, column), (item,)):
+            rows = self._query(
+                "SELECT ModifierType, RunOnce, Permanent, "
+                "SubjectRequirementSetId, OwnerRequirementSetId FROM "
+                "Modifiers WHERE ModifierId = ?", (mod_id,))
+            if not rows:
+                continue
+            mod_type, run_once, permanent, subject, owner = rows[0]
+            effect = {"id": mod_id, "modifier_type": mod_type,
+                      "run_once": bool(run_once),
+                      "permanent": bool(permanent),
+                      "args": dict(self._query(
+                          "SELECT Name, Value FROM ModifierArguments WHERE "
+                          "ModifierId = ?", (mod_id,))),
+                      "set_types": {}}
+            for key, set_id in (("subject_reqs", subject),
+                                ("owner_reqs", owner)):
+                effect[key] = []
+                if not set_id:
+                    continue
+                set_type = self._query(
+                    "SELECT RequirementSetType FROM RequirementSets WHERE "
+                    "RequirementSetId = ?", (set_id,))
+                effect["set_types"][key] = set_type[0][0] if set_type \
+                    else None
+                for (req_id,) in self._query(
+                        "SELECT RequirementId FROM RequirementSetRequirements "
+                        "WHERE RequirementSetId = ?", (set_id,)):
+                    req = self._query(
+                        "SELECT RequirementType, Inverse FROM Requirements "
+                        "WHERE RequirementId = ?", (req_id,))
+                    if not req:
+                        continue
+                    effect[key].append({
+                        "type": req[0][0], "inverse": bool(req[0][1]),
+                        "args": dict(self._query(
+                            "SELECT Name, Value FROM RequirementArguments "
+                            "WHERE RequirementId = ?", (req_id,)))})
+            out.append(effect)
+        return out
 
     def leader_unique_items(self, leader):
         """Unique items a leader's own traits unlock (e.g. a leader's

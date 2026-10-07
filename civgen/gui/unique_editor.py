@@ -13,6 +13,7 @@ from .model_designer import ModelDesigner
 from .landmark_editor import (BuildingModelFrame, DistrictModelFrame,
                               ImprovementModelFrame)
 from .placement_editor import ImprovementPlacementFrame, PlacementFrame
+from ..modifiers import describe_game_modifier, effect_from_game
 from ..uniques import (normalize_improvement_art,
                        normalize_improvement_placement, normalize_placement)
 from ..landmarks import normalize_building_art, normalize_district_art
@@ -135,9 +136,17 @@ class UniqueEditor(tk.Toplevel):
             "Describe them in the description on the General tab - the game "
             "does not describe effects by itself.").format(
                 label.lower())).pack(anchor="w", pady=(0, 8))
+        # the copied item's own effects: kept, dropped, or made editable
+        self.skip_effects = set(spec.get("skip_effects") or [])
+        self.copied_box = ttk.LabelFrame(effects, padding=(8, 4))
+        self.copied_box.pack(fill="x", pady=(0, 10))
+        self.copied_rows = {}           # ModifierId -> (BooleanVar, mod)
         self.effects = EffectsFrame(effects, app, self.kind,
                                     spec.get("effects"), self._own_types)
         self.effects.pack(fill="both", expand=True)
+        self._refresh_copied_effects()
+        self.base.var.trace_add("write",
+                                lambda *_: self._refresh_copied_effects())
         ttk.Label(pedia, text="Civilopedia history (separate paragraphs with "
                               "a blank line)").pack(anchor="w")
         self.pedia = tk.Text(pedia, height=16, width=80, wrap="word",
@@ -163,7 +172,7 @@ class UniqueEditor(tk.Toplevel):
         data = self.app.data
         ttk.Label(body, text="Copy of").grid(row=0, column=0, sticky="w",
                                               **pad)
-        choices = list(data.type_choices(self.kind))
+        choices = list(data.unique_choices(self.kind))
         if self.kind in CAN_BE_NEW:
             choices.insert(0, (NEW, "Nothing - a new {}".format(self.kind)))
         self.base = TypeCombo(body, choices, spec.get("base", "") or (
@@ -305,6 +314,7 @@ class UniqueEditor(tk.Toplevel):
                                           **pad)
             row += 1
         self.number_tables = {}
+        self.copy_buttons = {}          # key -> (button, title)
         if self.kind in ("building", "improvement"):
             row = self._number_table(body, row, "yields", "Yields",
                                      "yield", spec.get("yields"))
@@ -320,6 +330,87 @@ class UniqueEditor(tk.Toplevel):
                 "Effects tab)".format(self.kind))).grid(
                 row=row, column=0, columnspan=3, sticky="w", pady=(10, 0))
         self._refresh_base()
+
+    def _refresh_copied_effects(self):
+        """List the copied item's effects, each with a Keep box."""
+        for var, mod in self.copied_rows.values():     # remember choices
+            if var.get():
+                self.skip_effects.discard(mod["id"])
+            else:
+                self.skip_effects.add(mod["id"])
+        box = self.copied_box
+        for widget in box.winfo_children():
+            widget.destroy()
+        self.copied_rows = {}
+        base = self._base()
+        if not base or self.kind == "unit":     # nothing copied to show
+            box.pack_forget()
+            return
+        if not box.winfo_ismapped():
+            box.pack(fill="x", pady=(0, 10), before=self.effects)
+        mods = self.app.data.base_effects(self.kind, base)
+        if not mods:
+            box.configure(text="Effects of the copied {}".format(
+                self.app.data.type_name(self.kind, base)))
+            ttk.Label(box, foreground=theme.hint(), text=(
+                "It has no effects of its own (or load the game data to "
+                "see them).")).grid(row=0, column=0, sticky="w")
+            return
+        box.configure(text="Effects of the copied {} ({})".format(
+            self.app.data.type_name(self.kind, base), len(mods)))
+        ttk.Label(box, wraplength=820, justify="left",
+                  foreground=theme.hint(), text=(
+                      "Kept effects work as in the game. Untick one to "
+                      "leave it out. \"Copy into my effects\" turns those "
+                      "the effect list below can express into effects you "
+                      "can edit (the others stay as they are).")).grid(
+            row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
+        name_of = self._name_of
+        for i, mod in enumerate(mods, 1):
+            var = tk.BooleanVar(value=mod["id"] not in self.skip_effects)
+            ttk.Checkbutton(box, text="Keep", variable=var).grid(
+                row=i, column=0, sticky="w", padx=(0, 8))
+            editable = effect_from_game(mod) is not None
+            ttk.Label(box, text=describe_game_modifier(mod, name_of)).grid(
+                row=i, column=1, sticky="w")
+            ttk.Label(box, foreground=theme.hint(),
+                      text="editable" if editable else "as in the game"
+                      ).grid(row=i, column=2, sticky="w", padx=(12, 0))
+            self.copied_rows[mod["id"]] = (var, mod)
+        ttk.Button(box, text="Copy into my effects",
+                   command=self.copy_effects).grid(
+            row=len(mods) + 1, column=0, columnspan=2, sticky="w",
+            pady=(6, 0))
+
+    def copy_effects(self):
+        """The kept copied effects the editor can express become effects
+        of the unique's own (and are no longer copied)."""
+        copied, left = 0, 0
+        for var, mod in self.copied_rows.values():
+            if not var.get():
+                continue
+            effect = effect_from_game(mod)
+            if effect is None:
+                left += 1
+                continue
+            self.effects.items.append(effect)
+            var.set(False)              # now one of its own
+            copied += 1
+        self.effects.refresh()
+        messagebox.showinfo(
+            "Effects copied", "{} effect{} copied into this {}'s own "
+            "effects{}.".format(
+                copied, "" if copied == 1 else "s", self.kind,
+                "; {} cannot be edited here and stay{} copied as in the "
+                "game".format(left, "s" if left == 1 else "")
+                if left else ""), parent=self)
+
+    def skipped_effects(self):
+        """ModifierIds of the copied item's effects not to copy."""
+        skip = set(self.skip_effects)
+        for var, mod in self.copied_rows.values():
+            (skip.discard if var.get() else skip.add)(mod["id"])
+        return sorted(skip)
 
     def _number_table(self, body, row, key, title, kind, values):
         """An optional table of amounts per type (yields, great person
@@ -340,9 +431,35 @@ class UniqueEditor(tk.Toplevel):
             ttk.Entry(frame, textvariable=var, width=5).grid(
                 row=r, column=c + 1, sticky="w", padx=(0, 14), pady=2)
             entries[type_name] = var
+        copy_btn = ttk.Button(frame, command=lambda: self.copy_numbers(
+            key))
+        copy_btn.grid(row=1 + (len(choices) + 2) // 3, column=0,
+                      columnspan=6, sticky="w", pady=(6, 0))
         frame.grid(row=row, column=0, columnspan=3, sticky="we", pady=(10, 0))
         self.number_tables[key] = (own, entries)
+        self.copy_buttons[key] = (copy_btn, title)
         return row + 1
+
+    def copy_numbers(self, key):
+        """Fill a table with the copied item's values, to change them."""
+        base = self._base()
+        own, entries = self.number_tables[key]
+        values = self.app.data.base_numbers(self.kind, base, key)
+        for type_name, var in entries.items():
+            var.set(str(values.get(type_name, "")))
+        own.set(True)
+
+    def _refresh_copy_buttons(self):
+        base = self._base()
+        for key, (button, title) in getattr(self, "copy_buttons",
+                                            {}).items():
+            if base:
+                button.configure(text="Copy the {}'s {}".format(
+                    self.app.data.type_name(self.kind, base),
+                    title.lower()))
+                button.grid()
+            else:
+                button.grid_remove()    # a new item: nothing to copy
 
     # -- 3D model (units) ------------------------------------------------------
 
@@ -625,7 +742,7 @@ class UniqueEditor(tk.Toplevel):
             choices.append((SAME, "{} (as the {} it copies)".format(
                 data.type_name(self.kind, replaced), self.kind)))
         choices.append((NOTHING, "Nothing - an extra {}".format(self.kind)))
-        choices += list(data.type_choices(self.kind))
+        choices += list(data.unique_choices(self.kind))
         self.replaces.set_choices(choices)
         if current == SAME and not replaced:
             current = NOTHING           # a new item has no "same"
@@ -651,6 +768,7 @@ class UniqueEditor(tk.Toplevel):
     def _refresh_base(self):
         data = self.app.data
         base = self._base()
+        self._refresh_copy_buttons()
         row = data.item(self.kind, base)
         if hasattr(self, "replaces"):
             self._refresh_replaces()
@@ -722,6 +840,7 @@ class UniqueEditor(tk.Toplevel):
                                         tk.BooleanVar(value=True)).get()),
             "effects": self.effects.effects(),
             "icon_path": self.icon_path.get().strip(),
+            "skip_effects": self.skipped_effects(),
             "portrait_path": self.portrait_path.get().strip(),
         }
         spec["art"] = self.model_spec() if self.kind == "unit" \

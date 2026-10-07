@@ -27,7 +27,8 @@ A unique spec is a plain picklable dict:
     item's; buildings and improvements), gpp ({GreatPersonClassType: points} or None =
     the base item's; buildings and districts), adjacencies (bool, keep
     the base district's / improvement's adjacency bonuses), effects (see
-    modifiers.py), placement (districts and improvements: where it can be
+    modifiers.py), skip_effects (ModifierIds of the base item's effects
+    not to copy - dropped, or copied into effects), placement (districts and improvements: where it can be
     built, see PLACEMENT_DEFAULTS / IMPROVEMENT_PLACEMENT_DEFAULTS; None =
     the base item's rules), icon_path (custom icon image, "" = the base
     item's icons), art (units: the 3D model, see unit_art.py; its look
@@ -132,6 +133,10 @@ CLONE_TABLES = {
         ("Improvements_XP2", "ImprovementType", True),
     ],
 }
+
+# tables linking an item to its modifiers (see skip_effects)
+MODIFIER_TABLES = ("BuildingModifiers", "DistrictModifiers",
+                   "ImprovementModifiers")
 
 # A required technology / civic of "NONE": the item needs none (even if
 # the copied item does)
@@ -512,6 +517,10 @@ def normalize_unique(spec, civ, data, prefix=""):
         "stats": stats, "yields": numbers["yields"], "gpp": numbers["gpp"],
         "adjacencies": bool(spec.get("adjacencies", True)),
         "effects": list(spec.get("effects") or []),
+        # ModifierIds of the base item's effects not to copy
+        "skip_effects": sorted({str(m).strip() for m in
+                                spec.get("skip_effects") or []
+                                if str(m).strip()}) if base else [],
         "icon_path": icon_path,
         "art": art,
         # the item whose icons it uses: the unit / building it looks
@@ -541,20 +550,21 @@ def normalize_unique(spec, civ, data, prefix=""):
 # SQL
 # ---------------------------------------------------------------------------
 
-def clone_rows(table, column, base, new, updates=()):
+def clone_rows(table, column, base, new, updates=(), where=""):
     """Copy every row of table whose column is base, with new instead.
     Through a temporary table, so every column is copied - also those an
     expansion or another mod adds. updates: (column, SQL value) pairs to
-    change in the copy."""
+    change in the copy; where: an extra condition on the rows copied."""
     sets = ", ".join("{} = {}".format(c, v) for c, v in
                      [(column, sql_str(new))] + list(updates))
     return ("DROP TABLE IF EXISTS CivGenClone;\n"
             "CREATE TEMPORARY TABLE CivGenClone AS SELECT * FROM {table} "
-            "WHERE {column} = {base};\n"
+            "WHERE {column} = {base}{where};\n"
             "UPDATE CivGenClone SET {sets};\n"
             "INSERT INTO {table} SELECT * FROM CivGenClone;\n"
             "DROP TABLE CivGenClone;\n").format(
-                table=table, column=column, base=sql_str(base), sets=sets)
+                table=table, column=column, base=sql_str(base), sets=sets,
+                where=" AND " + where if where else "")
 
 
 def _stat_value(value):
@@ -597,8 +607,15 @@ VALUES ({civ}, {trait});
                                "Improvement_Adjacencies") and \
                     not u["adjacencies"]:
                 continue
+            where = ""
+            if clone_table in MODIFIER_TABLES and u["skip_effects"]:
+                # effects of the base item it does not copy (dropped, or
+                # copied into its own editable effects)
+                where = "ModifierId NOT IN ({})".format(", ".join(
+                    map(sql_str, u["skip_effects"])))
             (xp2 if gs else out).append(
-                clone_rows(clone_table, clone_column, base, slug))
+                clone_rows(clone_table, clone_column, base, slug,
+                           where=where))
     else:                               # new: the usual values, then stats
         columns = [(column, sql_str(slug))] + updates
         given = {c for c, _ in columns}
