@@ -701,3 +701,78 @@ def player_item_sql(u, leader, sort_index):
                 sql_str(u["slug"]), sql_str(u["name_tag"]),
                 sql_str(u["desc_tag"]), sql_str(u["icon_name"]), sort_index,
                 sql_str(leader))
+
+
+# ---------------------------------------------------------------------------
+# A description written from the unique's changes
+# ---------------------------------------------------------------------------
+
+# stats that are costs: column -> (verb, resource)
+COST_WORDS = {"Cost": ("Costs", "Production"),
+              "Maintenance": ("Maintenance costs", "Gold")}
+
+
+def describe_unique(spec, data, name_of=None):
+    """A description of a unique spec in the game's style: what it
+    replaces, its stats compared with the item it copies (a new item: its
+    stats), its own yields and great person points, and its effects. Lines
+    are separated by newlines. data: GameData (the copied item's stats);
+    name_of(kind, type): display names (default: data.type_name)."""
+    from .modifiers import describe_effects, sentence, with_icons
+    name_of = name_of or data.type_name
+    kind = spec.get("kind")
+    base = (spec.get("base") or "").strip()
+    row = data.item(kind, base) if base and data.conn else None
+    lines = []
+    replaces = spec.get("replaces", True)
+    if kind in CAN_REPLACE:
+        replaced = ((row or {}).get("replaces") or base) if replaces is True \
+            else ("" if not replaces or str(replaces).upper() == NO_PREREQ
+                  else str(replaces))
+        if replaced:
+            lines.append("Replaces the {}.".format(name_of(kind, replaced)))
+    stats = spec.get("stats") or {}
+    district = stats.get("PrereqDistrict")
+    if kind == "building" and district and district != (row or {}).get(
+            "PrereqDistrict"):
+        lines.append("Built in the {} district.".format(
+            name_of("district", district)))
+    for column, label, stat_kind in STATS.get(kind, []):
+        value = str(stats.get(column, "") or "").strip()
+        if stat_kind != "int" or not value:
+            continue
+        try:
+            value = int(value)
+        except ValueError:
+            continue
+        before = (row or {}).get(column)
+        change = value - before if row and isinstance(before, int) else None
+        if change == 0 or (change is None and not value):
+            continue
+        than = " than the {}".format(name_of(kind, base))             if change is not None else ""
+        if column in COST_WORDS:        # what it costs, the game's way
+            what, unit = COST_WORDS[column]
+            amount = "{} {}".format(abs(change), "more" if change > 0
+                                    else "less") if change is not None                 else str(value)
+            lines.append(with_icons(sentence("{} {} {}{}{}".format(
+                what, amount, unit, " per turn" if column == "Maintenance"
+                else "", than))))
+        else:
+            lines.append(with_icons(sentence("{:+d} {}{}".format(
+                change if change is not None else value, label,
+                " (compared to the {})".format(name_of(kind, base))
+                if change is not None else ""))))
+    for key, list_kind, what in (("yields", "yield", ""),
+                                 ("gpp", "great_person", " points")):
+        for type_name, amount in sorted((spec.get(key) or {}).items()):
+            try:
+                amount = int(amount)
+            except (TypeError, ValueError):
+                continue
+            if amount:
+                lines.append(with_icons(sentence("{:+d} {}{}".format(
+                    amount, name_of(list_kind, type_name), what))))
+    effects = describe_effects(spec.get("effects"), name_of)
+    if effects:
+        lines.append(effects)
+    return "\n".join(lines)

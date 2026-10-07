@@ -530,6 +530,36 @@ def prepare_project(leader_specs, civ_specs, data, prefix=""):
                               "item.".format(owner["name"], m["item"],
                                              other))
             seen[("moment", m["item"])] = owner["name"]
+    # references to items: one of the project's or of the game's - the
+    # game refuses a mod referring to a type that does not exist
+    own = {u["slug"]: u["kind"] for cc in civ_ctxs for u in cc["uniques"]}
+
+    def known(item, kind=None):
+        if item in own:
+            return kind is None or own[item] == kind
+        if not data.conn:
+            return True                 # cannot tell; assume the game's
+        kinds = [kind] if kind else ["unit", "building", "district",
+                                     "improvement"]
+        return any(data.item(k, item) for k in kinds)
+    for owner in civ_ctxs + ctxs:
+        for m in owner["moments"]:
+            if not known(m["item"]):
+                errors.append(
+                    "{}: the historic moment picture is for {}, which is "
+                    "neither one of the project's uniques nor in the game "
+                    "(was the unique renamed, or the type prefix "
+                    "changed?). Pick its item again on the Historic "
+                    "moments tab.".format(owner["name"], m["item"]))
+    for cc in civ_ctxs:
+        for u in cc["uniques"]:
+            if u["kind"] == "building" and u["district"] and \
+                    not known(u["district"], "district"):
+                errors.append(
+                    "{}: it is built in {}, which is neither one of the "
+                    "project's districts nor in the game. Pick its "
+                    "district again (Stats tab).".format(u["label"],
+                                                        u["district"]))
     led = {c["civ"] for c in ctxs}
     for cc in civ_ctxs:
         if cc["slug"] not in led:

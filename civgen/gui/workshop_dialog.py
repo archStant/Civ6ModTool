@@ -183,7 +183,7 @@ class WorkshopDialog(tk.Toplevel):
     def _generated(self):
         app = self.app
         return generated_description(
-            app.mod_name_var.get().strip() or "Alternate Leaders",
+            app.mod_name_var.get().strip() or "unnamed_mod",
             app.project["civs"], app.project["leaders"],
             app.civ_display_name)
 

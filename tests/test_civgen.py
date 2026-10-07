@@ -9,6 +9,7 @@ Tests needing the game cache (DebugGameplay.sqlite) or install are
 skipped when it is missing.
 """
 
+import json
 import os
 import shutil
 import sqlite3
@@ -28,6 +29,20 @@ MOMENT_IMAGE = os.path.join(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))), "assets", "icon.png")
 GAME_DIR = find_game_dir()
 DATA = None
+
+
+def gathering_storm_cache():
+    """Whether the game's cache is of a Gathering Storm game: the game
+    rewrites it for the ruleset last played, and Gathering Storm's tables
+    and types only exist then."""
+    if not CACHE:
+        return False
+    db = sqlite3.connect(CACHE)
+    try:
+        return bool(db.execute("SELECT 1 FROM sqlite_master WHERE name = "
+                               "'Units_XP2'").fetchall())
+    finally:
+        db.close()
 
 
 def game_data():
@@ -230,7 +245,8 @@ class GeneratedModTest(unittest.TestCase):
         db = database("DebugGameplay.sqlite", self.tmp)
         self.addCleanup(db.close)
         db.executescript(read(self.mod_dir, "Gameplay/NewLeader_Gameplay.sql"))
-        db.executescript(read(self.mod_dir, modbuild.XP2_FILE))
+        if gathering_storm_cache():     # (its own file, loaded with GS)
+            db.executescript(read(self.mod_dir, modbuild.XP2_FILE))
         self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
         q = lambda sql: db.execute(sql).fetchall()    # noqa: E731
         self.assertEqual(q("SELECT StartingCivilizationLevelType FROM "
@@ -245,8 +261,9 @@ class GeneratedModTest(unittest.TestCase):
                          [(40, 3, None)])     # Swordsman: Iron Working
         self.assertIn(("CLASS_MELEE",), q(
             "SELECT Tag FROM TypeTags WHERE Type = 'UNIT_TST_AMAZON_WARRIOR'"))
-        self.assertEqual(len(q("SELECT * FROM Units_XP2 WHERE UnitType = "
-                               "'UNIT_TST_AMAZON_WARRIOR'")), 1)
+        if gathering_storm_cache():
+            self.assertEqual(len(q("SELECT * FROM Units_XP2 WHERE UnitType = "
+                                   "'UNIT_TST_AMAZON_WARRIOR'")), 1)
         self.assertEqual(q("SELECT ReplacesDistrictType FROM DistrictReplaces "
                            "WHERE CivUniqueDistrictType = "
                            "'DISTRICT_TST_AMAZON_FORGE'"),
@@ -530,6 +547,9 @@ class GeneratedModTest(unittest.TestCase):
 class GameDataTest(unittest.TestCase):
 
     def test_templates_use_game_modifier_types(self):
+        if not gathering_storm_cache():
+            self.skipTest("some effects need the expansions; the game's "
+                          "cache is of another ruleset")
         db = sqlite3.connect(CACHE)
         self.addCleanup(db.close)
         known = {t for (t,) in db.execute(
@@ -538,6 +558,9 @@ class GameDataTest(unittest.TestCase):
             self.assertIn(t.modifier_type, known, t.id)
 
     def test_requirements_are_game_requirement_types(self):
+        if not gathering_storm_cache():
+            self.skipTest("some conditions need the expansions; the game's "
+                          "cache is of another ruleset")
         db = sqlite3.connect(CACHE)
         self.addCleanup(db.close)
         known = {t for (t,) in db.execute(
@@ -550,8 +573,11 @@ class GameDataTest(unittest.TestCase):
         self.addCleanup(db.close)
         tables = {t for (t,) in db.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        gs = gathering_storm_cache()
         for kind, rows in uniques.CLONE_TABLES.items():
-            for table, column, _ in rows:
+            for table, column, gs_only in rows:
+                if gs_only and not gs:
+                    continue            # not in this ruleset's cache
                 self.assertIn(table, tables)
                 columns = [r[1] for r in db.execute(
                     'PRAGMA table_info("{}")'.format(table))]
@@ -1292,3 +1318,172 @@ class WorkshopTest(unittest.TestCase):
         os.remove(os.path.join(mod, "art.zip"))
         os.remove(os.path.join(mod, "a.sql"))
         self.assertTrue(any("Missing" in m for m in failed()))
+
+
+class ProjectFileTest(unittest.TestCase):
+    """Projects are saved as JSON (*.civmod); older pickled *.altleader
+    projects still open."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="civgen_proj_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        leaders, civs = sample_project()
+        leaders[0]["primary"] = (10, 20, 30)
+        leaders[0]["icon_crop"] = (100.5, 200.0, 80.0)
+        self.project = {"mod_name": "Amazons", "prefix": "TST",
+                        "output_dir": "C:/out", "guid": str(uuid.uuid4()),
+                        "leaders": leaders, "civs": civs,
+                        "workshop": {"version": 2}}
+
+    def test_round_trip(self):
+        path = os.path.join(self.tmp, "a" + project.PROJECT_EXT)
+        project.save_project(self.project, path)
+        with open(path, encoding="utf-8") as fh:
+            saved = json.load(fh)               # plain JSON on disk
+        self.assertEqual(saved["magic"], project.PROJECT_MAGIC)
+        self.assertEqual(saved["version"], project.PROJECT_VERSION)
+        loaded, version = project.load_project(path)
+        self.assertEqual(version, project.PROJECT_VERSION)
+        self.assertEqual(loaded, self.project)  # tuples are tuples again
+        self.assertIsInstance(loaded["leaders"][0]["primary"], tuple)
+        self.assertFalse(os.path.exists(path + ".tmp"))
+        self.assertEqual(project.project_path_for(path), path)
+
+    def test_older_pickled_project(self):
+        import pickle
+        old = dict(self.project, magic=project.LEGACY_MAGIC, version=3)
+        del old["civs"]                         # older still: no civs
+        path = os.path.join(self.tmp, "old" + project.LEGACY_EXT)
+        with open(path, "wb") as fh:
+            pickle.dump(old, fh)
+        loaded, version = project.load_project(path)
+        self.assertEqual((version, loaded["civs"]), (3, []))
+        self.assertEqual(project.project_path_for(path),
+                         os.path.join(self.tmp, "old" + project.PROJECT_EXT))
+        # a pickle under another name is never unpickled
+        other = os.path.join(self.tmp, "sneaky" + project.PROJECT_EXT)
+        shutil.copy(path, other)
+        with self.assertRaisesRegex(ValueError, "not a project"):
+            project.load_project(other)
+
+    def test_bad_files(self):
+        path = os.path.join(self.tmp, "bad" + project.PROJECT_EXT)
+        with open(path, "w") as fh:
+            fh.write('{"magic": ')
+        with self.assertRaisesRegex(ValueError, "damaged"):
+            project.load_project(path)
+        with open(path, "w") as fh:
+            json.dump({"magic": "something else", "leaders": []}, fh)
+        with self.assertRaisesRegex(ValueError, "does not look"):
+            project.load_project(path)
+        self.assertEqual(project.json_ready({"c": (1, 2)}), {"c": [1, 2]})
+
+
+class DescriptionTest(unittest.TestCase):
+    """Descriptions written from effects (and a unique's changes)."""
+
+    def test_effects(self):
+        e1 = modifiers.new_effect("city_yield")
+        e1["args"].update(YieldType="YIELD_FAITH", Amount="2")
+        e2 = modifiers.new_effect("combat_strength")
+        e2["args"]["Amount"] = "5"
+        text = modifiers.describe_effects(
+            [e1, e2], lambda kind, t: {"YIELD_FAITH": "Faith"}.get(t, t))
+        self.assertEqual(text.split("\n"), [
+            "+2 [ICON_Faith] Faith in every city.",
+            "+5 [ICON_Strength] Combat Strength."])
+        # existing icons and tags are left alone
+        self.assertEqual(modifiers.with_icons("+1 [ICON_Food] Food, ICON_Gold"),
+                         "+1 [ICON_Food] Food, ICON_Gold")
+        self.assertEqual(modifiers.sentence(": +1 Gold"), "+1 Gold.")
+
+    @unittest.skipUnless(CACHE, "needs the game cache")
+    def test_unique(self):
+        leaders, civs = sample_project()
+        unit, temple = civs[0]["uniques"][:2]
+        unit["stats"]["Maintenance"] = "0"
+        text = uniques.describe_unique(unit, game_data()).split("\n")
+        self.assertEqual(text[0], "Replaces the Swordsman.")
+        self.assertIn("+5 [ICON_Strength] Combat strength (compared to the "
+                      "Swordsman).", text)
+        self.assertTrue(any(line.startswith("Maintenance costs") and
+                            "less [ICON_Gold] Gold per turn than the "
+                            "Swordsman" in line for line in text))
+        text = uniques.describe_unique(temple, game_data())
+        self.assertIn("+4 [ICON_Faith] Faith.", text)
+        arena = civs[0]["uniques"][3]
+        self.assertIn("Costs 60 [ICON_Production] Production.",
+                      uniques.describe_unique(arena, game_data()))
+
+
+class ReferenceTest(unittest.TestCase):
+    """References to the project's own uniques follow prefix changes and
+    renames, and a stale one stops generation instead of breaking the
+    game."""
+
+    class NoData:
+        conn = None
+        items = {}
+
+        def item(self, kind, t):
+            return None
+
+    def setUp(self):
+        from civgen import references
+        self.refs = references
+        self.leaders, self.civs = sample_project()
+        self.civs[0]["moment_illustrations"] = [
+            {"item": "UNIT_AMAZON_WARRIOR", "path": MOMENT_IMAGE},  # stale
+            {"item": "UNIT_XX_AMAZON_WARRIOR", "path": MOMENT_IMAGE}]
+
+    def test_repair(self):
+        fixed = self.refs.repair(self.leaders, self.civs, "TST",
+                                 game_data() if CACHE else self.NoData())
+        items = [m["item"] for m in self.civs[0]["moment_illustrations"]]
+        if CACHE:
+            self.assertEqual(items, ["UNIT_TST_AMAZON_WARRIOR"] * 2)
+            self.assertEqual(len(fixed), 2)
+        # what is already right is left alone
+        hall = self.civs[0]["uniques"][4]
+        self.assertEqual(hall["stats"]["PrereqDistrict"],
+                         "DISTRICT_TST_AMAZON_ARENA")
+
+    def test_repair_without_the_game(self):
+        # a bare type could be the game's: only prefixed forms are fixed
+        self.refs.repair(self.leaders, self.civs, "TST", self.NoData())
+        self.assertEqual([m["item"] for m in
+                          self.civs[0]["moment_illustrations"]],
+                         ["UNIT_AMAZON_WARRIOR", "UNIT_TST_AMAZON_WARRIOR"])
+
+    def test_game_types_are_not_touched(self):
+        if not CACHE:
+            self.skipTest("needs the game cache")
+        unit = self.civs[0]["uniques"][0]
+        unit["name"] = "Warrior"                # like the game's own
+        self.civs[0]["moment_illustrations"] = [
+            {"item": "UNIT_WARRIOR", "path": MOMENT_IMAGE}]
+        self.assertEqual(self.refs.repair(self.leaders, self.civs, "TST",
+                                          game_data()), [])
+
+    def test_prefix_change_and_retarget(self):
+        mapping = self.refs.prefix_change(self.civs, "TST", "SZ")
+        self.assertEqual(mapping["DISTRICT_TST_AMAZON_ARENA"],
+                         "DISTRICT_SZ_AMAZON_ARENA")
+        self.refs.retarget(self.civs, mapping)
+        self.assertEqual(self.civs[0]["uniques"][4]["stats"]
+                         ["PrereqDistrict"], "DISTRICT_SZ_AMAZON_ARENA")
+        self.assertEqual(self.civs[0]["uniques"][4]["name"],
+                         "Hall of Heroines")   # texts are left alone
+
+    def test_stale_reference_stops_generation(self):
+        self.civs[0]["moment_illustrations"] = [
+            {"item": "UNIT_TST_NOT_THERE", "path": MOMENT_IMAGE}]
+        self.civs[0]["uniques"][4]["stats"]["PrereqDistrict"] = \
+            "DISTRICT_TST_GONE"
+        _, _, errors = modbuild.prepare_project(
+            self.leaders, self.civs, game_data() if CACHE else
+            self.NoData(), "TST")
+        self.assertTrue(any("UNIT_TST_NOT_THERE" in e for e in errors)
+                        or not CACHE, errors)
+        self.assertTrue(any("DISTRICT_TST_GONE" in e for e in errors)
+                        or not CACHE, errors)

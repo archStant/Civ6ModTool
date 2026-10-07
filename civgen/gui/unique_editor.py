@@ -17,9 +17,10 @@ from ..uniques import (normalize_improvement_art,
                        normalize_improvement_placement, normalize_placement)
 from ..landmarks import normalize_building_art, normalize_district_art
 from ..uniques import (CAN_BE_NEW, CAN_REPLACE, KIND_LABELS, MAIN_TABLES,
-                       NO_PREREQ, STATS)
+                       NO_PREREQ, STATS, describe_unique)
 from .modifier_editor import EffectsFrame
 from . import help_texts
+from .widgets import WRITE_TIP, write_description
 from .widgets import fit_to_screen
 from .widgets import icon_text
 from .widgets import (HelpBox, ImagePreview, ScrollFrame, TypeCombo,
@@ -207,8 +208,10 @@ class UniqueEditor(tk.Toplevel):
         self.name_var.trace_add("write", lambda *_: self._refresh_slug())
         ttk.Label(body, text="Description").grid(row=5, column=0,
                                                  sticky="nw", **pad)
-        box, self.desc = icon_text(body, height=5, width=64, wrap="word",
-                                   undo=True)
+        box, self.desc = icon_text(
+            body, buttons=[("Write from effects", self.write_description,
+                            WRITE_TIP)],
+            height=5, width=64, wrap="word", undo=True)
         self.desc.insert("1.0", spec.get("desc", ""))
         box.grid(row=5, column=1, columnspan=2, sticky="w", **pad)
         ttk.Label(body, text="(empty: the copied item's description)",
@@ -682,6 +685,27 @@ class UniqueEditor(tk.Toplevel):
             label.configure(text="copied: {}".format(value) if row else "")
 
     # -- result ---------------------------------------------------------------
+
+    def _name_of(self, kind, type_name):
+        """Display names, the civilization's own items included."""
+        own = dict(self.civ_types(kind))
+        own.update(self._own_types(kind))
+        return own.get(type_name) or self.app.data.type_name(kind,
+                                                            type_name)
+
+    def write_description(self):
+        spec = {"kind": self.kind, "base": self._base(),
+                "replaces": self._replaces_value(),
+                "stats": {c: get() for c, get in self.stat_getters.items()
+                          if str(get()).strip()},
+                "effects": self.effects.effects()}
+        for key, (own, entries) in self.number_tables.items():
+            if own.get():
+                spec[key] = {t: var.get().strip()
+                             for t, var in entries.items()
+                             if var.get().strip()}
+        write_description(self.desc, describe_unique(
+            spec, self.app.data, self._name_of), self)
 
     def on_ok(self):
         spec = {

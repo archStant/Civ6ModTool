@@ -6,12 +6,15 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 from ..civs import CITIZEN_GROUPS, CIV_INFO, START_BIAS, civ_slug
+from ..modifiers import describe_effects
+from ..references import retarget, unique_type
 from ..uniques import KINDS, KIND_LABELS, MAIN_TABLES, new_unique_spec
 from ..util import slug_for_name, type_display_name
 from . import theme
 from .modifier_editor import EffectsFrame
 from .moments_editor import MomentsFrame
 from .unique_editor import UniqueEditor
+from .widgets import WRITE_TIP, write_description
 from .widgets import fit_to_screen
 from .widgets import icon_text
 from .widgets import (ImagePreview, ScrollFrame, TypeCombo, browse_image,
@@ -195,8 +198,10 @@ class CivEditor(tk.Toplevel):
             row=1, column=1, sticky="w", **pad)
         ttk.Label(body, text="Description").grid(row=2, column=0,
                                                  sticky="nw", **pad)
-        box, self.ability_desc = icon_text(body, height=4, width=80,
-                                           wrap="word", undo=True)
+        box, self.ability_desc = icon_text(
+            body, buttons=[("Write from effects", self.write_description,
+                            WRITE_TIP)],
+            height=4, width=80, wrap="word", undo=True)
         self.ability_desc.insert("1.0", ability.get("desc", ""))
         box.grid(row=2, column=1, columnspan=2, sticky="w", **pad)
 
@@ -225,6 +230,21 @@ class CivEditor(tk.Toplevel):
                                             ability.get("effects"),
                                             self._unique_types)
         self.ability_effects.grid(row=5, column=0, columnspan=3, sticky="we")
+
+    def write_description(self):
+        """The copied abilities' own descriptions, then the effects."""
+        known = {a["type"]: a for _, a in self.app.data.all_abilities()}
+        parts = [(known[t].get("desc") or "").replace("[NEWLINE]", "\n")
+                 for t in self.clones if t in known]
+
+        def name_of(kind, type_name):
+            own = dict(self._unique_types(kind))
+            return own.get(type_name) or self.app.data.type_name(
+                kind, type_name)
+        parts.append(describe_effects(self.ability_effects.effects(),
+                                      name_of))
+        write_description(self.ability_desc,
+                          "\n".join(p for p in parts if p.strip()), self)
 
     def _ability_choices(self):
         """[(TraitType, 'Name - owner')] of every ability in the game."""
@@ -342,10 +362,26 @@ class CivEditor(tk.Toplevel):
         i = self._selected_unique()
         if i is None:
             return
+        old = unique_type(self.uniques[i], self.app.type_prefix())
         result = self._unique_dialog(copy.deepcopy(self.uniques[i]))
         if result:
             self.uniques[i] = result
+            new = unique_type(result, self.app.type_prefix())
+            if old and new and old != new:     # renamed
+                self._retarget({old: new})
             self._refresh_uniques()
+
+    def _retarget(self, mapping):
+        """References to a renamed unique (other uniques' districts and
+        effects, the ability's effects, moment pictures) follow it."""
+        retarget(self.uniques, mapping)
+        retarget(self.ability_effects.items, mapping)
+        self.ability_effects.refresh()
+        for row in self.moments_frame.rows:
+            item = row["item"].get().strip().upper()
+            if item in mapping:
+                row["item"].set(mapping[item])
+        self.moments_frame.refresh_items()
 
     def _duplicate_unique(self):
         i = self._selected_unique()

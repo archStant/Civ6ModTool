@@ -590,3 +590,64 @@ def _preview(w, mod_id, t, display_name):
                    "VALUES ({}, 'Preview', {});".format(sql_str(mod_id),
                                                         sql_str(tag)))
     w.texts.append((tag, "+{{1_Amount}} {}".format(display_name)))
+
+
+# ---------------------------------------------------------------------------
+# Descriptions written from effects
+# ---------------------------------------------------------------------------
+
+# words of effect summaries -> the game's icon tag shown before them (the
+# longest first, so "Great Scientist" wins over "Great")
+TEXT_ICONS = sorted({
+    "Food": "[ICON_Food]", "Production": "[ICON_Production]",
+    "Gold": "[ICON_Gold]", "Science": "[ICON_Science]",
+    "Culture": "[ICON_Culture]", "Faith": "[ICON_Faith]",
+    "Tourism": "[ICON_Tourism]", "Housing": "[ICON_Housing]",
+    "Amenities": "[ICON_Amenities]", "Amenity": "[ICON_Amenities]",
+    "Combat Strength": "[ICON_Strength]",
+    "Combat strength": "[ICON_Strength]",
+    "Ranged strength": "[ICON_Ranged]", "Range": "[ICON_Range]",
+    "Bombard strength": "[ICON_Bombard]",
+    "Movement": "[ICON_Movement]", "Trade Route": "[ICON_TradeRoute]",
+    "trade routes": "[ICON_TradeRoute]", "Envoys": "[ICON_Envoy]",
+    "Governor Titles": "[ICON_Governor]",
+    "Great General": "[ICON_GreatGeneral]",
+    "Great Admiral": "[ICON_GreatAdmiral]",
+    "Great Engineer": "[ICON_GreatEngineer]",
+    "Great Merchant": "[ICON_GreatMerchant]",
+    "Great Prophet": "[ICON_GreatProphet]",
+    "Great Scientist": "[ICON_GreatScientist]",
+    "Great Writer": "[ICON_GreatWriter]",
+    "Great Artist": "[ICON_GreatArtist]",
+    "Great Musician": "[ICON_GreatMusician]",
+}.items(), key=lambda kv: -len(kv[0]))
+
+
+def with_icons(text):
+    """text with the game's icon tag before each known word (+1 Faith ->
+    +1 [ICON_Faith] Faith), once per word, never inside a tag."""
+    import re
+    # not inside a tag ([ICON_Faith]: after "_"), not after an icon
+    pattern = re.compile(r"(?<![\w\]])(?<!\] )({})(?!\w)".format(
+        "|".join(re.escape(word) for word, _ in TEXT_ICONS)))
+    icons = dict(TEXT_ICONS)
+    return pattern.sub(
+        lambda m: "{} {}".format(icons[m.group(1)], m.group(1)), text)
+
+
+def sentence(text):
+    """A summary as a sentence: capitalised, ending with a full stop."""
+    # (an adjacency without a label starts with its ": ")
+    text = " ".join(text.split()).lstrip(": ")
+    if not text:
+        return ""
+    text = text[0].upper() + text[1:]
+    return text if text.endswith((".", "!", "?")) else text + "."
+
+
+def describe_effects(effects, name_of=lambda kind, t: type_display_name(t)):
+    """A description of effects in the game's style: one sentence per
+    effect, with the game's icons (see with_icons). Lines are separated
+    by newlines (the editors turn them into [NEWLINE])."""
+    return "\n".join(with_icons(sentence(summary(e, name_of)))
+                     for e in effects or [])

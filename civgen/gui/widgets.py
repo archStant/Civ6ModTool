@@ -7,7 +7,7 @@ import threading
 import time
 
 import tkinter as tk
-from tkinter import ttk, colorchooser, filedialog
+from tkinter import ttk, colorchooser, filedialog, messagebox
 
 from ..art import default_image_crop, fitted_portrait, make_circle_icon
 from . import theme
@@ -691,13 +691,47 @@ class IconBar(ttk.Frame):
         more.pack(side="left", padx=(6, 0))
 
 
-def icon_text(parent, **options):
-    """A Text with an IconBar under it: (frame to place, Text)."""
+def icon_text(parent, buttons=(), **options):
+    """A Text with an IconBar under it: (frame to place, Text).
+    buttons: (text, command, tooltip) of buttons after the icon bar."""
     frame = ttk.Frame(parent)
     text = tk.Text(frame, **options)
     text.pack(side="top", fill="both", expand=True)
-    IconBar(frame, text).pack(side="top", anchor="w", pady=(2, 0))
+    row = ttk.Frame(frame)
+    row.pack(side="top", anchor="w", fill="x", pady=(2, 0))
+    IconBar(row, text).pack(side="left")
+    for label, command, tip in buttons:
+        ttk.Separator(row, orient="vertical").pack(side="left", fill="y",
+                                                   padx=8, pady=2)
+        button = ttk.Button(row, text=label, command=command,
+                            style="Toolbutton")
+        button.pack(side="left")
+        if tip:
+            add_tooltip(button, tip)
     return frame, text
+
+
+WRITE_TIP = ("Writes the description from the effects (and what else "
+             "makes it what it is), in the game's style with its icons. "
+             "Edit it afterwards as you like.")
+
+
+def write_description(widget, text, parent):
+    """Put text into a description Text, asking before replacing what is
+    there."""
+    if not text.strip():
+        messagebox.showinfo("Nothing to describe", "Add some effects (or "
+                            "changes) first.", parent=parent)
+        return
+    current = widget.get("1.0", "end").strip()
+    if current == text.strip():
+        return
+    if current and not messagebox.askyesno(
+            "Replace description", "Replace the description with one "
+            "written from the effects?", parent=parent):
+        return
+    widget.delete("1.0", "end")
+    widget.insert("1.0", text)
 
 
 def install_icon_context_menu(root):

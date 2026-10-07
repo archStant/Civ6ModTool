@@ -2,7 +2,6 @@
 
 import copy
 import os
-import pickle
 import shutil
 import sqlite3
 import subprocess
@@ -28,7 +27,10 @@ from ..moments import move_to_civs as move_moments_to_civs
 from ..workshop import (UPLOADER_EXE, build_stamp, find_uploader,
                         new_workshop_spec, normalize_workshop, plain_text,
                         resolved)
-from ..project import (PROJECT_MAGIC, PROJECT_VERSION, export_leaders,
+from ..references import (prefix_change, retarget,
+                          repair as repair_references)
+from ..project import (LEGACY_EXT, PROJECT_EXT, json_ready, load_project,
+                       project_path_for, save_project, export_leaders,
                        import_leaders)
 from . import theme
 from .widgets import install_icon_context_menu
@@ -46,7 +48,7 @@ class GeneratorApp(tk.Tk):
 
     def __init__(self):
         super().__init__()
-        self.title("Civ 6 Mod Generator - civilizations and leaders")
+        self.title("Civ 6 Mod Generator")
         self.minsize(760, 520)
         self._set_window_icon()
         # light / dark mode before any widget, so they start in its colors
@@ -88,7 +90,7 @@ class GeneratorApp(tk.Tk):
     @staticmethod
     def _empty_project():
         return {
-            "mod_name": "Alternate Leaders",
+            "mod_name": "New Mod",
             "prefix": "",
             "output_dir": default_out_dir(),
             "guid": str(uuid.uuid4()),
@@ -168,6 +170,10 @@ class GeneratorApp(tk.Tk):
                                                   "bold"), padding=(12, 4))
         style.configure("Status.TLabel", foreground=theme.hint(),
                         padding=(8, 2))
+        # the status bar's warning: white on red, like a badge
+        style.configure("Warning.TLabel", foreground="#ffffff",
+                        background="#d64541",
+                        font=("TkDefaultFont", 10, "bold"), padding=(4, 0))
         # tall rows so each leader's icon fits next to their name
         style.configure("Leaders.Treeview", rowheight=LIST_ICON_SIZE + 8)
 
@@ -244,6 +250,21 @@ class GeneratorApp(tk.Tk):
         self.project_label = ttk.Label(status, text="(unsaved)",
                                        style="Status.TLabel")
         self.project_label.pack(side="left")
+        # without the game's own data: a warning, which loads it on click
+        self.data_warning = ttk.Label(status, text=" ! ",
+                                      style="Warning.TLabel",
+                                      cursor="hand2")
+        self.data_warning.pack(side="right", padx=(0, 6))
+        self.data_warning.bind("<Button-1>", lambda e: self.on_load_cache())
+        add_tooltip(self.data_warning, (
+            "Using the built-in list of game data: only a handful of "
+            "civilizations and leaders, and none of the game's units, "
+            "buildings, districts, improvements, abilities or agendas - "
+            "the editors' lists are nearly empty and copied items cannot "
+            "be checked.\n\nClick here (or Load game data... in the "
+            "toolbar) to read the real data of your game, DLC and mods "
+            "included. Tip: start the game once with Gathering Storm "
+            "first, so its data is in the game's cache."))
         self.cache_label = ttk.Label(status, text="using built-in list",
                                      style="Status.TLabel")
         self.cache_label.pack(side="right")
@@ -343,6 +364,9 @@ class GeneratorApp(tk.Tk):
             var.trace_add("write", lambda *_: self._update_save_button())
         # civilization types include the prefix
         self.prefix_var.trace_add("write", lambda *_: self._refresh_lists())
+        # references to the project's uniques follow the prefix
+        self._last_prefix = self.type_prefix()
+        self.prefix_var.trace_add("write", lambda *_: self._prefix_changed())
 
         # -- keyboard shortcuts
         for keys, command in (("<Control-n>", self.on_new_project),
@@ -409,12 +433,14 @@ class GeneratorApp(tk.Tk):
     # -- unsaved-changes tracking ----------------------------------------------
 
     def _project_state(self):
-        """What a save writes, to compare against the last saved state."""
-        return (self.mod_name_var.get().strip() or "Alternate Leaders",
-                self.type_prefix(), self.out_var.get().strip(),
-                copy.deepcopy(self.project["leaders"]),
-                copy.deepcopy(self.project["civs"]),
-                copy.deepcopy(self.project.get("workshop")))
+        """What a save writes, to compare against the last saved state
+        (as JSON keeps it: a tuple and a list of the same values are
+        the same)."""
+        return json_ready([
+            self.mod_name_var.get().strip() or "New mod",
+            self.type_prefix(), self.out_var.get().strip(),
+            self.project["leaders"], self.project["civs"],
+            self.project.get("workshop")])
 
     def _mark_saved(self):
         """The current state is what is on disk (or a fresh project)."""
@@ -439,10 +465,12 @@ class GeneratorApp(tk.Tk):
                     return
         self.destroy()
 
-    def _update_save_button(self):
-        if self._saved_state is None:   # still building the widgets
-            return
-        unsaved = self._has_unsaved_changes()
+    def _update_save_button(self, force=False):
+        """force: the project has unsaved changes whatever its state
+        (_saved_state None, e.g. not yet saved in the current format)."""
+        if self._saved_state is None and not force:
+            return                      # still building the widgets
+        unsaved = self._saved_state is None or self._has_unsaved_changes()
         self.save_btn.state(["!disabled"] if unsaved else ["disabled"])
         name = os.path.basename(self.project_path) if self.project_path             else "New project (not saved yet)"
         self.project_label.config(text="Project: {}{}".format(
@@ -782,60 +810,58 @@ class GeneratorApp(tk.Tk):
         self.project = self._empty_project()
         self.project_path = None
         self.mod_name_var.set(self.project["mod_name"])
+        # (a project of its own: not a prefix change)
+        self._last_prefix = clean_prefix(self.project.get("prefix", ""))
         self.prefix_var.set(self.project["prefix"])
         self.out_var.set(self.project["output_dir"])
         self._refresh_lists()
         self._mark_saved()
 
+    PROJECT_TYPES = [("Civ mod project", "*" + PROJECT_EXT),
+                     ("Older project (alt-leader)", "*" + LEGACY_EXT),
+                     ("All files", "*.*")]
+
     def on_open_project(self):
         path = filedialog.askopenfilename(
-            title="Open alt-leader project",
-            filetypes=[("Alt-leader project", "*.altleader"),
-                       ("All files", "*.*")])
+            title="Open project", filetypes=[
+                ("Projects", "*{} *{}".format(PROJECT_EXT, LEGACY_EXT))] +
+            self.PROJECT_TYPES)
         if not path:
             return
         try:
-            with open(path, "rb") as fh:
-                project = pickle.load(fh)
-        except Exception as exc:
+            project, version = load_project(path)
+        except (OSError, ValueError) as exc:
             messagebox.showerror("Could not open project", str(exc))
             return
-        if (not isinstance(project, dict)
-                or project.get("magic") != PROJECT_MAGIC
-                or not isinstance(project.get("leaders"), list)):
-            messagebox.showerror("Invalid project file",
-                                 "This does not look like an alt-leader "
-                                 "project file.")
-            return
-        for spec in project["leaders"]:
-            if not isinstance(spec, dict) or "name" not in spec:
-                messagebox.showerror("Invalid project file",
-                                     "Project contains a malformed leader "
-                                     "entry.")
-                return
-        project.setdefault("civs", [])      # projects before version 3
         project["workshop"] = normalize_workshop(project.get("workshop"))
-        if not isinstance(project["civs"], list) or not all(
-                isinstance(c, dict) and "name" in c for c in project["civs"]):
-            messagebox.showerror("Invalid project file",
-                                 "Project contains a malformed civilization "
-                                 "entry.")
-            return
-        if project.get("version", 1) < 2:
+        if version < 2:
             self._migrate_icon_crops(project["leaders"])
-        project["version"] = PROJECT_VERSION
         self._move_moments(project["leaders"], project["civs"],
                            clean_prefix(project.get("prefix", "")))
         self.project = project
         self.project["output_dir"] = (project.get("output_dir")
                                       or default_out_dir())
-        self.project_path = path
+        # an older *.altleader is saved as a *.civmod next to it
+        self.project_path = project_path_for(path)
         self.mod_name_var.set(self.project.get("mod_name",
-                                               "Alternate Leaders"))
+                                               "unnamed_mod"))
+        # (a project of its own: not a prefix change)
+        self._last_prefix = clean_prefix(self.project.get("prefix", ""))
         self.prefix_var.set(self.project.get("prefix", ""))
         self.out_var.set(self.project["output_dir"])
         self._refresh_lists()
         self._mark_saved()
+        if self.project_path != path:
+            # not saved in the new format yet
+            self._saved_state = None
+            self._update_save_button(force=True)
+            messagebox.showinfo(
+                "Older project",
+                "This project was made with an older version and is "
+                "stored as a Python pickle ({}).\n\nSaving it writes a "
+                "{} file next to it instead:\n{}\n\nThe old file is not "
+                "changed.".format(os.path.basename(path), PROJECT_EXT,
+                                  self.project_path))
 
     def _move_moments(self, leaders, civs, prefix=None):
         """Historic moment pictures now belong to civilizations: move
@@ -866,34 +892,30 @@ class GeneratorApp(tk.Tk):
 
     def on_save_project(self):
         self.project["mod_name"] = self.mod_name_var.get().strip() \
-            or "Alternate Leaders"
+            or "unnamed_mod"
         self.project["prefix"] = self.type_prefix()
         self.project["output_dir"] = self.out_var.get().strip()
         path = self.project_path
         if not path:
+            name = self.project["mod_name"]
             path = filedialog.asksaveasfilename(
-                title="Save alt-leader project",
-                defaultextension="altleader",
-                filetypes=[("Alt-leader project", "*.altleader")])
+                title="Save project",
+                initialfile=safe_folder_name(name) + PROJECT_EXT,
+                defaultextension=PROJECT_EXT,
+                filetypes=self.PROJECT_TYPES[:1])
             if not path:
                 return
             self.project_path = path
-        payload = dict(self.project)
-        payload["magic"] = PROJECT_MAGIC
-        payload["version"] = PROJECT_VERSION
-        payload["leaders"] = list(self.project["leaders"])
-        payload["civs"] = list(self.project["civs"])
         try:
-            with open(path, "wb") as fh:
-                pickle.dump(payload, fh, protocol=pickle.HIGHEST_PROTOCOL)
-        except OSError as exc:
+            save_project(self.project, path)
+        except (OSError, TypeError, ValueError) as exc:
             messagebox.showerror("Could not save project", str(exc))
             return
         self._mark_saved()
         messagebox.showinfo("Project saved",
                             "Saved {} leader(s) and {} civilization(s) "
                             "to:\n{}".format(len(self.project["leaders"]),
-                                            len(self.project["civs"]), path))
+                                             len(self.project["civs"]), path))
 
     def on_save_project_as(self):
         """Save under a new file name (the project then lives there)."""
@@ -925,6 +947,7 @@ class GeneratorApp(tk.Tk):
         self.cache_label.config(text="{} ({} civilizations, {} leaders)".format(
             os.path.basename(path), len(self.data.civ_to_leaders),
             len(self.data.leader_meta)))
+        self.data_warning.pack_forget()     # the real data now
         messagebox.showinfo(
             "Game data loaded",
             "Loaded {} civilizations / {} leaders from your install. "
@@ -943,10 +966,35 @@ class GeneratorApp(tk.Tk):
 
     # -- generation -----------------------------------------------------------------
 
+    def _prefix_changed(self):
+        """Point references to the civilizations' uniques (moment
+        pictures, districts, effects) at their types with the new
+        prefix."""
+        new = self.type_prefix()
+        old, self._last_prefix = getattr(self, "_last_prefix", new), new
+        if old == new:
+            return
+        mapping = prefix_change(self.project["civs"], old, new)
+        if mapping:
+            retarget(self.project["civs"], mapping)
+            retarget(self.project["leaders"], mapping)
+
     def on_generate(self, ask_open=True):
         """Generate the mod. ask_open: offer to open its folder after.
         Returns True when the mod was written."""
-        mod_name = self.mod_name_var.get().strip() or "Alternate Leaders"
+        # references left behind by an earlier prefix (older projects)
+        fixed = repair_references(self.project["leaders"],
+                                  self.project["civs"], self.type_prefix(),
+                                  self.data)
+        if fixed:
+            self._update_save_button()
+            messagebox.showinfo(
+                "References updated",
+                "These references to the project's uniques used an old "
+                "type and now use the current one:\n\n{}\n\n(Save the "
+                "project to keep this.)".format("\n".join(
+                    "{}  ->  {}".format(old, new) for old, new in fixed)))
+        mod_name = self.mod_name_var.get().strip() or "unnamed_mod"
         out_root = self.out_var.get().strip()
         if not out_root:
             messagebox.showwarning("Missing input", "Choose an output folder.")
@@ -1035,7 +1083,7 @@ class GeneratorApp(tk.Tk):
 
     def mod_dir(self):
         """Where the mod is generated."""
-        name = self.mod_name_var.get().strip() or "Alternate Leaders"
+        name = self.mod_name_var.get().strip() or "unnamed_mod"
         return os.path.join(self.out_var.get().strip(),
                             safe_folder_name(name))
 
@@ -1053,7 +1101,7 @@ class GeneratorApp(tk.Tk):
         workshop.resolved)."""
         return resolved(self.project.get("workshop"),
                         self.mod_name_var.get().strip() or
-                        "Alternate Leaders", self.project["civs"],
+                        "unnamed_mod", self.project["civs"],
                         self.project["leaders"], self.civ_display_name)
 
     def build_stamp(self):

@@ -14,8 +14,10 @@ from ..art import (DEFAULT_ICON_BORDER_COLOR, DEFAULT_ICON_BORDER_WIDTH,
 from ..texts import (DIPLO_TEXT, PEDIA_HISTORY, PEDIA_TEXT,
                      inherit_candidates, spec_texts, texts_from_json,
                      texts_to_json)
+from ..modifiers import describe_effects
 from ..leaders import AI_TRAITS, DEFAULT_AI_TRAITS, spec_icon_mode
 from . import theme
+from .widgets import WRITE_TIP, write_description
 from .widgets import fit_to_screen
 from .widgets import icon_text
 from .widgets import IconCropDialog, ScrollFrame, add_tooltip
@@ -647,7 +649,9 @@ class LeaderEditor(tk.Toplevel):
         ttk.Label(box, text="Description").grid(row=1, column=0,
                                                 sticky="nw", **pad)
         desc_box, self.new_ability_desc = icon_text(
-            box, height=3, width=80, wrap="word", undo=True)
+            box, buttons=[("Write from effects",
+                           self.write_ability_description, WRITE_TIP)],
+            height=3, width=80, wrap="word", undo=True)
         self.new_ability_desc.insert("1.0", new.get("desc", ""))
         desc_box.grid(row=1, column=1, columnspan=2, sticky="w", **pad)
         ttk.Label(box, text="(empty: a list of its effects)",
@@ -669,6 +673,11 @@ class LeaderEditor(tk.Toplevel):
             else "New ability of its own (optional)")
         self.new_ability_replace_check.state(
             ["disabled"] if new else ["!disabled"])
+
+    def write_ability_description(self):
+        write_description(self.new_ability_desc, describe_effects(
+            self.new_ability_effects.effects(), self.app.data.type_name),
+            self)
 
     def new_ability(self):
         effects = self.new_ability_effects.effects()

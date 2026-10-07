@@ -3,7 +3,7 @@ Civ 6 Mod Generator
 ===================
 
 A tkinter GUI that generates Sid Meier's Civilization VI mods with new
-civilizations and alternate leaders. One mod ("pack") can contain any
+civilizations and leaders. One mod ("pack") can contain any
 number of each.
 
 Leaders (alternate leaders for game civilizations, or the leaders of the
@@ -28,8 +28,9 @@ game's own art), and:
     (3D art and icons too) with changed stats, yields, great person
     points and extra effects, normally replacing that item.
 
-Work-in-progress projects can be saved and re-opened (pickled to
-*.altleader files), so you can build a pack over several sessions.
+Work-in-progress projects can be saved and re-opened (*.civmod files,
+plain JSON), so you can build a mod over several sessions. Projects of
+older versions (*.altleader) still open and are saved as *.civmod.
 
 Usage:
     python main.py
@@ -49,6 +50,7 @@ Tests:
     python -m unittest discover -s tests -t .
 
 Note:
-    Project files are Python pickles. Only open *.altleader files you
-    or people you trust created - pickle can execute arbitrary code.
+    Older *.altleader project files are Python pickles, which can run
+    code when opened: only open ones you or people you trust created.
+    *.civmod files are plain JSON and safe to open.
 """

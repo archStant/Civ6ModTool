@@ -5,9 +5,90 @@ import os
 import zipfile
 
 
-PROJECT_MAGIC = "civ6-alt-leader-generator-project"
-PROJECT_VERSION = 3              # 2: icon crops are in fitted-portrait pixels
+PROJECT_MAGIC = "civ6-mod-generator-project"
+PROJECT_VERSION = 4              # 2: icon crops are in fitted-portrait pixels
                                  # 3: projects have civilizations ("civs")
+                                 # 4: saved as JSON (*.civmod)
+PROJECT_EXT = ".civmod"
+# projects before version 4: Python pickles (*.altleader)
+LEGACY_EXT = ".altleader"
+LEGACY_MAGIC = "civ6-alt-leader-generator-project"
+
+
+# ---------------------------------------------------------------------------
+# Project files
+# ---------------------------------------------------------------------------
+
+def json_ready(value):
+    """value as JSON keeps it (tuples become lists): for comparing a
+    project with what was saved."""
+    return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+def save_project(project, path):
+    """Write project (a dict of the GUI's state: mod_name, prefix,
+    output_dir, guid, leaders, civs, workshop, ...) to path as JSON.
+    Written to a temporary file first, so a failed save never leaves a
+    broken project behind. Raises OSError (or TypeError for a value JSON
+    cannot hold)."""
+    payload = dict(project, magic=PROJECT_MAGIC, version=PROJECT_VERSION)
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
+
+
+def load_project(path):
+    """Read a project file: a *.civmod (JSON) or an older *.altleader
+    (pickle). Returns (project dict, version it was saved with); the
+    caller migrates older versions. Raises ValueError with a message for
+    the user."""
+    with open(path, "rb") as fh:
+        raw = fh.read()
+    if raw.lstrip()[:1] == b"{":
+        try:
+            project = json.loads(raw.decode("utf-8-sig"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            raise ValueError("The project file is damaged ({}).".format(exc))
+        magic = PROJECT_MAGIC
+    else:
+        # an older project: a pickle. Pickles can run code when loaded,
+        # so only *.altleader files are read this way.
+        if not path.lower().endswith(LEGACY_EXT):
+            raise ValueError("This is not a project file.")
+        import pickle
+        try:
+            project = pickle.loads(raw)
+        except Exception as exc:        # anything a bad pickle raises
+            raise ValueError("Could not read the old project ({}).".format(
+                exc))
+        magic = LEGACY_MAGIC
+    if (not isinstance(project, dict) or project.get("magic") != magic
+            or not isinstance(project.get("leaders"), list)):
+        raise ValueError("This does not look like a project file.")
+    if not all(isinstance(s, dict) and "name" in s
+               for s in project["leaders"]):
+        raise ValueError("The project contains a malformed leader entry.")
+    project.setdefault("civs", [])      # projects before version 3
+    if not isinstance(project["civs"], list) or not all(
+            isinstance(c, dict) and "name" in c for c in project["civs"]):
+        raise ValueError("The project contains a malformed civilization "
+                         "entry.")
+    for spec in project["leaders"]:     # JSON turned the tuples into lists
+        for key in TUPLE_KEYS:
+            if isinstance(spec.get(key), list):
+                spec[key] = tuple(spec[key])
+    version = project.pop("version", 1)
+    project.pop("magic", None)
+    return project, version
+
+
+def project_path_for(path):
+    """Where a project read from path is saved: an older *.altleader
+    becomes a *.civmod next to it."""
+    root, ext = os.path.splitext(path)
+    return root + PROJECT_EXT if ext.lower() != PROJECT_EXT else path
 
 
 # ---------------------------------------------------------------------------
