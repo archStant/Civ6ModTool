@@ -8,9 +8,15 @@ A desktop tool for making Civilization VI mods without writing SQL or XML. It ge
 
 The output is a complete mod folder that the game loads like any other mod. It can be published on the Steam Workshop with the SDK's uploader.
 
+### What it does not do
+Any sort of modding beyond the above mentioned, such as new ressources, great people, yields, governors, beliefs, etc. etc. etc. will still require you to open ModBuddy and write the code yourself.
+
+## Acknowledgements
+Many many thanks to [Maconnolly](https://forums.civfanatics.com/members/maconnolly.319458/) for his very thorough mod template and instructions. This was the Rosetta stone for getting into Civ 6 modding for me and many others.
+
 ## Requirements
 
-- Windows, with Civilization VI installed through Steam. Rise and Fall and Gathering Storm are supported but not required.
+- Windows, with Civilization VI installed through Steam. Rise and Fall and Gathering Storm are supported but not required. Make sure that your game has been run, and a actual game has been started at least once.
 - **The Civilization VI SDK.** In Steam, open *Library*, switch the filter to *Tools* and install **Sid Meier's Civilization VI Development Tools**. The generator uses two parts of it:
   - **Asset cooker** (`AssetModTools\Cooker`): turns your images into the texture packages the game loads. Without it, custom icons, portraits, backgrounds and historic moment pictures are skipped, and the mod falls back to the game's own art.
   - **Workshop uploader** (`ModUploader`): needed to publish the mod on the Steam Workshop.
@@ -36,7 +42,7 @@ A mod keeps its id from build to build, so uploading again updates the same Work
 
 ## Projects
 
-Work is saved as `.civmod` project files (plain JSON). Images are referenced by their path on disk, not copied into the project. Older `.altleader` projects still open and are saved as `.civmod`.
+Work is saved as `.civmod` project files (plain JSON). Images are referenced by their path on disk, not copied into the project.
 
 **Export...** and **Import...** move leaders and civilizations, with their images, between projects or computers.
 
