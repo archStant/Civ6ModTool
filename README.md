@@ -12,7 +12,7 @@ The output is a complete mod folder that the game loads like any other mod. It c
 Any sort of modding beyond the above mentioned, such as new ressources, great people, yields, governors, beliefs, etc. etc. etc. will still require you to open ModBuddy and write the code yourself.
 
 ## Acknowledgements
-Many many thanks to [Maconnolly](https://forums.civfanatics.com/members/maconnolly.319458/) for his very thorough mod template and instructions. This was the Rosetta stone for getting into Civ 6 modding for me and many others.
+Many many thanks to [Maconnolly](https://forums.civfanatics.com/members/maconnolly.319458/) for his very thorough mod template and instructions. This was the Rosetta stone for getting into Civ 6 modding for so many of us.
 
 ## Requirements
 
