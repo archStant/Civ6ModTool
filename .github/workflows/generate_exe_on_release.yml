@@ -33,6 +33,7 @@ jobs:
             --enable-plugin=tk-inter `
             --include-data-dir=assets=assets `
             --windows-console-mode=disable --windows-icon-from-ico=app.ico `
+            --assume-yes-for-downloads `
             --output-dir=dist `
             --output-filename=Civ6ModGenerator.exe `
             main.py
