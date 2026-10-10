@@ -153,7 +153,12 @@ STATS = {
              ("BaseMoves", "Movement", "int"),
              ("BaseSightRange", "Sight", "int"),
              ("PrereqTech", "Required technology", "tech"),
-             ("PrereqCivic", "Required civic", "civic")],
+             ("PrereqCivic", "Required civic", "civic"),
+             ("StrategicResource", "Strategic resource", "resource"),
+             ("ResourceCost", "Strategic resource cost", "int"),
+             ("ResourceMaintenanceType", "Upkeep resource", "resource"),
+             ("ResourceMaintenanceAmount", "Upkeep (resource per turn)",
+              "int")],
     "building": [("PrereqDistrict", "District it is built in", "district"),
                  ("Cost", "Production cost", "int"),
                  ("Maintenance", "Maintenance (gold)", "int"),
@@ -177,6 +182,16 @@ STATS = {
                     ("PrereqTech", "Required technology", "tech"),
                     ("PrereqCivic", "Required civic", "civic")],
 }
+# Stats in a Gathering Storm-only table: kind -> (table, columns). They go
+# to the file that only loads then.
+GS_STATS = {"unit": ("Units_XP2", ("ResourceCost", "ResourceMaintenanceType",
+                                   "ResourceMaintenanceAmount"))}
+# A unit's strategic resources: (resource column, amount column, "" or
+# " per turn"). Without Gathering Storm the unit only needs access to its
+# strategic resource; the amounts are Gathering Storm's.
+RESOURCE_STATS = (("StrategicResource", "ResourceCost", ""),
+                  ("ResourceMaintenanceType", "ResourceMaintenanceAmount",
+                   " per turn"))
 
 # Icons copied from the base item: icon names with the base type in them
 # ({T} = type). Unit portraits also exist per ethnicity.
@@ -418,12 +433,14 @@ def normalize_unique(spec, civ, data, prefix=""):
             except ValueError:
                 raise ValueError("{}: {} must be a whole number.".format(
                     label, stat_label.lower()))
-        elif value.upper() == NO_PREREQ and stat_kind in ("tech", "civic"):
+        elif value.upper() == NO_PREREQ and stat_kind in ("tech", "civic",
+                                                          "resource"):
             value = None                # explicitly none (SQL NULL)
         else:
             value = value.upper()
             prefix = {"tech": "TECH_", "civic": "CIVIC_",
-                      "district": "DISTRICT_"}.get(stat_kind)
+                      "district": "DISTRICT_",
+                      "resource": "RESOURCE_"}.get(stat_kind)
             if prefix and not value.startswith(prefix):
                 raise ValueError("{}: {} must be a {} type{}.".format(
                     label, stat_label.lower(), prefix,
@@ -462,6 +479,18 @@ def normalize_unique(spec, civ, data, prefix=""):
     if base and data.conn and not base_row:
         raise ValueError("{}: {} is not in the loaded game data.".format(
             label, base))
+    stat_labels = {c: stat_label for c, stat_label, _ in STATS[kind]}
+    for res_column, amount_column, _ in \
+            RESOURCE_STATS if kind == "unit" else ():
+        # no amount of no resource: its own, else the copied unit's
+        # (unknown without the game data)
+        resource = stats[res_column] if res_column in stats \
+            else (base_row or {}).get(res_column, "?")
+        if (stats.get(amount_column) or 0) > 0 and not resource:
+            raise ValueError("{}: its {} is none, so its {} must be empty "
+                             "or 0 (Stats tab).".format(
+                                 label, stat_labels[res_column].lower(),
+                                 stat_labels[amount_column].lower()))
     # what it replaces: True = what the base item replaces (if it is a
     # unique item itself), else the base item; "" / False = nothing
     replaces = spec.get("replaces", True)
@@ -583,7 +612,11 @@ def unique_sql(u, name_of):
                ("TraitType", sql_str(u["trait"]))]
     if not u["desc"] and base:          # keep the base item's description
         del updates[1]
-    updates += [(c, _stat_value(v)) for c, v in sorted(u["stats"].items())]
+    gs_table, gs_columns = GS_STATS.get(kind, (None, ()))
+    updates += [(c, _stat_value(v)) for c, v in sorted(u["stats"].items())
+                if c not in gs_columns]
+    gs_updates = [(c, _stat_value(v)) for c, v in sorted(u["stats"].items())
+                  if c in gs_columns]
     if kind == "improvement":
         # its own icon (copied from the one it looks like, or custom)
         updates.append(("Icon", sql_str(u["icon_name"])))
@@ -616,6 +649,14 @@ VALUES ({civ}, {trait});
             (xp2 if gs else out).append(
                 clone_rows(clone_table, clone_column, base, slug,
                            where=where))
+        if gs_updates:
+            # (the copied item may have no row there: one with the
+            # table's defaults first)
+            xp2.append("INSERT OR IGNORE INTO {t} ({c}) VALUES ({s});\n"
+                       "UPDATE {t} SET {sets} WHERE {c} = {s};\n".format(
+                           t=gs_table, c=column, s=sql_str(slug),
+                           sets=", ".join("{} = {}".format(c, v)
+                                          for c, v in gs_updates)))
     else:                               # new: the usual values, then stats
         columns = [(column, sql_str(slug))] + updates
         given = {c for c, _ in columns}
@@ -754,9 +795,10 @@ def describe_unique(spec, data, name_of=None):
             "PrereqDistrict"):
         lines.append("Built in the {} district.".format(
             name_of("district", district)))
+    amounts = [a for _, a, _ in RESOURCE_STATS]     # (described below)
     for column, label, stat_kind in STATS.get(kind, []):
         value = str(stats.get(column, "") or "").strip()
-        if stat_kind != "int" or not value:
+        if stat_kind != "int" or not value or column in amounts:
             continue
         try:
             value = int(value)
@@ -779,6 +821,8 @@ def describe_unique(spec, data, name_of=None):
                 change if change is not None else value, label,
                 " (compared to the {})".format(name_of(kind, base))
                 if change is not None else ""))))
+    if kind == "unit":
+        lines += _resource_lines(stats, row, name_of(kind, base), name_of)
     for key, list_kind, what in (("yields", "yield", ""),
                                  ("gpp", "great_person", " points")):
         for type_name, amount in sorted((spec.get(key) or {}).items()):
@@ -793,3 +837,43 @@ def describe_unique(spec, data, name_of=None):
     if effects:
         lines.append(effects)
     return "\n".join(lines)
+
+
+def _resource_lines(stats, row, base_name, name_of):
+    """Description lines of a unit's changed strategic resource cost and
+    upkeep (see describe_unique). row: the copied unit's (None: unknown;
+    its amounts are only known from a Gathering Storm game's data)."""
+    row = row or {}
+    lines = []
+    for res_column, amount_column, per_turn in RESOURCE_STATS:
+        given = str(stats.get(res_column) or "").strip().upper()
+        try:
+            amount = int(str(stats.get(amount_column, "")).strip())
+        except ValueError:
+            amount = None
+        if not given and amount is None:
+            continue                    # the copied unit's
+        before, before_amount = row.get(res_column), row.get(amount_column)
+        resource = None if given == NO_PREREQ else (given or before)
+        if amount is None:
+            amount = before_amount
+        what = "Maintenance costs" if per_turn else "Costs"
+        if not resource or amount == 0:
+            if before and before_amount != 0:
+                lines.append("{} no [ICON_{}] {}{}.".format(
+                    what, before, name_of("resource", before), per_turn))
+            continue
+        if resource == before and amount == before_amount:
+            continue
+        text = "[ICON_{}] {}".format(resource, name_of("resource", resource))
+        if resource == before and isinstance(amount, int) and \
+                isinstance(before_amount, int):
+            lines.append("{} {} {} {}{} than the {}.".format(
+                what, abs(amount - before_amount),
+                "more" if amount > before_amount else "less", text,
+                per_turn, base_name))
+        else:                           # (amount None: unknown)
+            lines.append("{} {}{}{}.".format(
+                what, "" if amount is None else "{} ".format(amount), text,
+                per_turn))
+    return lines
