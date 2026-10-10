@@ -27,7 +27,9 @@ Many many thanks to [Maconnolly](https://forums.civfanatics.com/members/maconnol
 ## Getting started
 
 1. Start the game once with the expansions you use enabled (preferably Gathering Storm), then quit. This writes the game's data cache, which the generator reads.
-2. Run the generator: `Civ6ModGenerator.exe`, or `python main.py` from source.
+2. Either:
+   - Download and run the generator: `Civ6ModGenerator.exe`
+   - Clone or download this code, make a python venv (`py -m venv venv`), install the requirements (`pip install -r requirements.txt`) and then run `python main.py` from source.
 3. Click **Load game data...** in the toolbar. Until you do, the status bar shows a red warning and the editors only offer a small built-in list.
 4. Add civilizations and leaders, set a mod name and a type prefix (e.g. your initials, so your types do not clash with other mods), then click **Generate mod** (F5).
 5. The mod is written to the output folder, by default the game's `Mods` folder (`Documents\My Games\Sid Meier's Civilization VI\Mods`). Enable it under *Additional Content* in the game.

@@ -125,7 +125,9 @@ def sample_project():
     unit = uniques.new_unique_spec("unit")
     unit.update(base="UNIT_SWORDSMAN", name="Amazon Warrior",
                 stats={"Combat": "40", "BaseMoves": "3",
-                       "PrereqTech": "None"},
+                       "PrereqTech": "None", "ResourceCost": "10",
+                       "ResourceMaintenanceType": "RESOURCE_HORSES",
+                       "ResourceMaintenanceAmount": "1"},
                 effects=[modifiers.new_effect("movement"),
                          modifiers.new_effect("combat_strength")],
                 art={"look_from": "UNIT_ROMAN_LEGION",
@@ -261,9 +263,14 @@ class GeneratedModTest(unittest.TestCase):
                          [(40, 3, None)])     # Swordsman: Iron Working
         self.assertIn(("CLASS_MELEE",), q(
             "SELECT Tag FROM TypeTags WHERE Type = 'UNIT_TST_AMAZON_WARRIOR'"))
+        self.assertEqual(q("SELECT StrategicResource FROM Units WHERE "
+                           "UnitType = 'UNIT_TST_AMAZON_WARRIOR'"),
+                         [("RESOURCE_IRON",)])      # the Swordsman's
         if gathering_storm_cache():
-            self.assertEqual(len(q("SELECT * FROM Units_XP2 WHERE UnitType = "
-                                   "'UNIT_TST_AMAZON_WARRIOR'")), 1)
+            self.assertEqual(q("SELECT ResourceCost, ResourceMaintenanceType, "
+                               "ResourceMaintenanceAmount FROM Units_XP2 "
+                               "WHERE UnitType = 'UNIT_TST_AMAZON_WARRIOR'"),
+                             [(10, "RESOURCE_HORSES", 1)])
         self.assertEqual(q("SELECT ReplacesDistrictType FROM DistrictReplaces "
                            "WHERE CivUniqueDistrictType = "
                            "'DISTRICT_TST_AMAZON_FORGE'"),
@@ -843,6 +850,100 @@ class PrereqTest(unittest.TestCase):
             uniques.normalize_unique(spec, civ, NoData())
 
 
+class StrategicResourceTest(unittest.TestCase):
+    """A unique unit's strategic resource, and Gathering Storm's resource
+    cost and upkeep."""
+
+    class NoData:
+        conn = None
+
+    civ = {"name": "X", "slug": "CIVILIZATION_X"}
+
+    def normalize(self, stats, base="UNIT_SWORDSMAN", data=None):
+        spec = uniques.new_unique_spec("unit")
+        spec.update(base=base, name="Y", stats=stats)
+        return uniques.normalize_unique(spec, self.civ, data or self.NoData(),
+                                        "TST")
+
+    def test_sql(self):
+        u = self.normalize({"StrategicResource": "resource_niter",
+                            "ResourceCost": "5",
+                            "ResourceMaintenanceType": "None"})
+        self.assertEqual(u["stats"], {"StrategicResource": "RESOURCE_NITER",
+                                      "ResourceCost": 5,
+                                      "ResourceMaintenanceType": None})
+        sql, gs, _ = uniques.unique_sql(u, lambda kind, t: t)
+        # the resource is the game's own column; the amounts Gathering
+        # Storm's (a row with its defaults if the copied unit has none)
+        self.assertIn("StrategicResource = 'RESOURCE_NITER'", sql)
+        self.assertNotIn("ResourceCost", sql)
+        self.assertIn("INSERT OR IGNORE INTO Units_XP2 (UnitType) VALUES "
+                      "('UNIT_TST_Y');", gs)
+        self.assertIn("ResourceCost = 5, ResourceMaintenanceType = NULL", gs)
+        self.assertLess(gs.index("CivGenClone"), gs.index("INSERT OR IGNORE"))
+
+    def test_bad_values(self):
+        for stats in ({"StrategicResource": "IRON"},
+                      {"ResourceCost": "x"},
+                      # an amount of no resource
+                      {"StrategicResource": "NONE", "ResourceCost": "5"},
+                      {"ResourceMaintenanceType": "none",
+                       "ResourceMaintenanceAmount": "1"}):
+            with self.assertRaises(ValueError, msg=stats):
+                self.normalize(stats)
+        self.normalize({"StrategicResource": "NONE", "ResourceCost": "0"})
+
+    @unittest.skipUnless(gathering_storm_cache(),
+                         "needs a Gathering Storm game's cache")
+    def test_game_data(self):
+        data = game_data()
+        swordsman = data.item("unit", "UNIT_SWORDSMAN")
+        self.assertEqual((swordsman["StrategicResource"],
+                          swordsman["ResourceCost"]), ("RESOURCE_IRON", 20))
+        self.assertEqual(data.item("unit", "UNIT_TANK")
+                         ["ResourceMaintenanceType"], "RESOURCE_OIL")
+        warrior = data.item("unit", "UNIT_WARRIOR")   # no Units_XP2 row
+        self.assertEqual((warrior["ResourceCost"],
+                          warrior["ResourceMaintenanceType"]), (0, None))
+        self.assertIn("RESOURCE_IRON",
+                      [t for t, _ in data.type_choices("strategic_resource")])
+        self.assertNotIn("RESOURCE_WINE",
+                         [t for t, _ in data.type_choices(
+                             "strategic_resource")])
+        # the Warrior needs no resource: no cost of none
+        with self.assertRaises(ValueError):
+            self.normalize({"ResourceCost": "5"}, "UNIT_WARRIOR", data)
+        u = self.normalize({"StrategicResource": "RESOURCE_IRON",
+                            "ResourceCost": "5",
+                            "ResourceMaintenanceType": "RESOURCE_IRON",
+                            "ResourceMaintenanceAmount": "1"},
+                           "UNIT_WARRIOR", data)
+        sql, gs, _ = uniques.unique_sql(u, data.type_name)
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        db = database("DebugGameplay.sqlite", tmp)
+        self.addCleanup(db.close)
+        db.executescript(
+            "INSERT INTO Types (Type, Kind) VALUES ('CIVILIZATION_X', "
+            "'KIND_CIVILIZATION');"
+            "INSERT INTO Civilizations (CivilizationType, Name, Description,"
+            " Adjective, StartingCivilizationLevelType) VALUES "
+            "('CIVILIZATION_X', 'X', 'X', 'X', 'CIVILIZATION_LEVEL_FULL_CIV');"
+            + sql + gs)
+        self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
+        self.assertEqual(db.execute(
+            "SELECT StrategicResource, ResourceCost, ResourceMaintenanceType, "
+            "ResourceMaintenanceAmount, Units_XP2.CanEarnExperience FROM "
+            "Units JOIN Units_XP2 USING (UnitType) WHERE UnitType = "
+            "'UNIT_TST_Y'"
+        ).fetchall(), [("RESOURCE_IRON", 5, "RESOURCE_IRON", 1, 1)])
+        text = uniques.describe_unique(
+            {"kind": "unit", "base": "UNIT_TANK",
+             "stats": {"ResourceMaintenanceType": "NONE"}}, data)
+        self.assertIn("Maintenance costs no [ICON_RESOURCE_OIL] Oil per "
+                      "turn.", text)
+
+
 class UnitArtTest(unittest.TestCase):
 
     def test_normalize(self):
@@ -1419,6 +1520,11 @@ class DescriptionTest(unittest.TestCase):
         self.assertTrue(any(line.startswith("Maintenance costs") and
                             "less [ICON_Gold] Gold per turn than the "
                             "Swordsman" in line for line in text))
+        if gathering_storm_cache():     # (the Swordsman's cost is known)
+            self.assertIn("Costs 10 less [ICON_RESOURCE_IRON] Iron than the "
+                          "Swordsman.", text)
+            self.assertIn("Maintenance costs 1 [ICON_RESOURCE_HORSES] "
+                          "Horses per turn.", text)
         text = uniques.describe_unique(temple, game_data())
         self.assertIn("+4 [ICON_Faith] Faith.", text)
         arena = civs[0]["uniques"][3]

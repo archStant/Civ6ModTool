@@ -58,6 +58,32 @@ BASE_HINTS = {
                    "usual improvements.",
 }
 
+RESOURCE_HINT = (
+    "Strategic resources: with Gathering Storm, training the unit costs an "
+    "amount of its strategic resource, and it uses up its upkeep resource "
+    "every turn. Without Gathering Storm it only needs access to its "
+    "strategic resource; the amounts do nothing.")
+STAT_TIPS = {
+    "StrategicResource": "The strategic resource it needs. Empty: the "
+                         "copied unit's. 'None': it needs none.",
+    "ResourceCost": "Gathering Storm: how much of its strategic resource "
+                    "training it costs (the game's units: 20, its unique "
+                    "units 10 or less, units with an upkeep 1). Empty: the "
+                    "copied unit's.",
+    "ResourceMaintenanceType": "Gathering Storm: the resource it uses up "
+                               "every turn (the game's: Coal, Oil, "
+                               "Aluminum, Uranium). Empty: the copied "
+                               "unit's. 'None': none.",
+    "ResourceMaintenanceAmount": "Gathering Storm: how much of its upkeep "
+                                 "resource it uses up every turn. Empty: "
+                                 "the copied unit's.",
+}
+# stat columns naming a type: column -> its GameData list kind
+STAT_TYPE_KINDS = {"PrereqTech": "tech", "PrereqCivic": "civic",
+                   "PrereqDistrict": "district",
+                   "StrategicResource": "resource",
+                   "ResourceMaintenanceType": "resource"}
+
 PLACEMENT_FRAMES = {"district": PlacementFrame,
                     "improvement": ImprovementPlacementFrame}
 MODEL_FRAMES = {"building": BuildingModelFrame,
@@ -279,23 +305,35 @@ class UniqueEditor(tk.Toplevel):
         self.stat_vars = {}             # column -> its StringVar
         row = 1
         for column, label, kind in STATS[self.kind]:
+            if column == "StrategicResource":   # (units) their own block
+                ttk.Label(body, wraplength=700, justify="left",
+                          foreground=theme.hint(), text=RESOURCE_HINT).grid(
+                    row=row, column=0, columnspan=3, sticky="w",
+                    pady=(10, 2))
+                row += 1
             ttk.Label(body, text=label).grid(row=row, column=0, sticky="w",
                                              **pad)
             if kind == "int":
                 var = tk.StringVar(value=str(given.get(column, "")))
-                ttk.Entry(body, textvariable=var, width=8).grid(
-                    row=row, column=1, sticky="w", **pad)
+                entry = ttk.Entry(body, textvariable=var, width=8)
+                entry.grid(row=row, column=1, sticky="w", **pad)
+                if column in STAT_TIPS:
+                    add_tooltip(entry, STAT_TIPS[column])
                 self.stat_getters[column] = var.get
                 self.stat_vars[column] = var
             else:
-                # "None": needs no technology / civic, even if the
-                # copied item does (empty: the copied item's)
+                # "None": needs no technology / civic / resource, even if
+                # the copied item does (empty: the copied item's)
                 if kind == "district":  # its own districts first
                     choices = list(self.civ_types("district")) + list(
                         self.app.data.type_choices(kind))
                     tip = ("The district the building is built in. Empty: "
                            "the copied building's (a new building needs "
                            "one).")
+                elif kind == "resource":
+                    choices = [(NO_PREREQ, "None - no resource")] + list(
+                        self.app.data.type_choices("strategic_resource"))
+                    tip = STAT_TIPS[column]
                 else:
                     choices = [(NO_PREREQ, "None - needs no {}".format(
                         {"tech": "technology"}.get(kind, kind)))] + list(
@@ -795,11 +833,14 @@ class UniqueEditor(tk.Toplevel):
                                      "(load the game cache to list the "
                                      "game's items and their stats)")
         for column, label in getattr(self, "base_labels", {}).items():
+            if row and column not in row:   # (Gathering Storm's)
+                label.configure(text="copied: unknown (the loaded game data "
+                                     "is not of a Gathering Storm game)")
+                continue
             value = (row or {}).get(column)
-            if column in ("PrereqTech", "PrereqCivic", "PrereqDistrict"):
-                value = data.type_name(
-                    {"PrereqTech": "tech", "PrereqCivic": "civic"}.get(
-                        column, "district"), value) if value else "none"
+            if column in STAT_TYPE_KINDS:
+                value = data.type_name(STAT_TYPE_KINDS[column], value) \
+                    if value else "none"
             label.configure(text="copied: {}".format(value) if row else "")
 
     # -- result ---------------------------------------------------------------

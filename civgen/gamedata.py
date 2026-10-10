@@ -35,6 +35,14 @@ ITEM_TABLES = {
     "district": ("Districts", "DistrictType", "DistrictReplaces"),
     "improvement": ("Improvements", "ImprovementType", None),
 }
+# Gathering Storm-only columns of items, in their own table (only in the
+# cache of a Gathering Storm game): kind -> (table, type column, {column:
+# value of an item without a row})
+ITEM_XP2_COLUMNS = {
+    "unit": ("Units_XP2", "UnitType", {"ResourceCost": 0,
+                                       "ResourceMaintenanceType": None,
+                                       "ResourceMaintenanceAmount": 0}),
+}
 # Civilizations.Ethnicity values (unit portraits); used without the cache
 ETHNICITIES = ["ETHNICITY_AFRICAN", "ETHNICITY_ASIAN", "ETHNICITY_EURO",
                "ETHNICITY_MEDIT", "ETHNICITY_SOUTHAM"]
@@ -495,6 +503,12 @@ class GameData:
             (t, self._name(name, t)) for t, name in self._query(
                 "SELECT FeatureType, Name FROM Features WHERE "
                 "NaturalWonder = 0 ORDER BY FeatureType")]
+        # resources a unit can cost (and use up each turn)
+        self.types["strategic_resource"] = [
+            (t, self._name(name, t)) for t, name in self._query(
+                "SELECT ResourceType, Name FROM Resources WHERE "
+                "ResourceClassType = 'RESOURCECLASS_STRATEGIC' "
+                "ORDER BY ResourceType")]
 
     def _load_items(self):
         """Every unit, building and district with all its columns, to
@@ -519,7 +533,24 @@ class GameData:
                     else ():
                 if unique in rows:
                     rows[unique]["replaces"] = base
+            if kind in ITEM_XP2_COLUMNS:
+                self._load_xp2_columns(kind, rows)
             self.items[kind] = rows
+
+    def _load_xp2_columns(self, kind, rows):
+        """Add an item kind's Gathering Storm-only columns to its rows
+        (see ITEM_XP2_COLUMNS), if the cache has them."""
+        table, column, defaults = ITEM_XP2_COLUMNS[kind]
+        try:
+            found = self.conn.execute('SELECT {}, {} FROM "{}"'.format(
+                column, ", ".join(defaults), table)).fetchall()
+        except sqlite3.Error:
+            return                      # not a Gathering Storm game
+        for row in rows.values():
+            row.update(defaults)
+        for values in found:
+            if values[0] in rows:
+                rows[values[0]].update(zip(defaults, values[1:]))
 
     def type_choices(self, kind):
         """[(type, English name)] of a TYPE_KINDS list ([] without the
