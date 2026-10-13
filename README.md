@@ -2,7 +2,7 @@
 
 A desktop tool for making Civilization VI mods without writing SQL or XML. It generates:
 
-- **Leaders**: alternate leaders for existing civilizations, or new leaders with their own ability, agenda and AI personality.
+- **Leaders**: alternate leaders for existing civilizations, or new leaders with their own ability, agenda and AI personality, and diplomacy-screen portraits that can change with their mood.
 - **Civilizations**: new civilizations with an ability, city and citizen names, start bias, Civilopedia text, art style and music.
 - **Uniques**: unique units, buildings, districts and improvements, either copied from the game's items and changed, or made from scratch, with their own stats, yields, effects, placement rules and 3D models.
 
@@ -68,6 +68,6 @@ Most tests generate mods and run their SQL against copies of the game's own data
 ## Limitations
 
 - **3D models** are assembled from the game's existing models and meshes. New models cannot be imported.
-- **Leaders** have no animated 3D scene. The diplomacy screen shows a 2D image made from the loading portrait, or another leader's scene.
+- **Leaders** have no animated 3D scene. The diplomacy screen shows a still image made from the loading portrait, or optionally a different picture for each mood or moment (happy, unhappy, declaring war, ...), in front of the leader's diplomacy background or another leader's scene.
 - **Effects** are built from a library of the game's modifier types. Some only exist with the expansions.
 - **DLC items:** a mod that copies an item from a DLC needs that DLC to be enabled.

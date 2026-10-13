@@ -113,6 +113,9 @@ def _spec_images(spec):
                                                     "portrait_path")]
     else:
         refs = [(spec, key) for key in IMAGE_KEYS]
+        moods = spec.get("mood_images")
+        if isinstance(moods, dict):     # diplomacy portraits by mood
+            refs += [(moods, slot) for slot in sorted(moods)]
     refs += [(entry, "path") for entry in spec.get("moment_illustrations")
              or []]
     return refs

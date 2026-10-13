@@ -18,6 +18,8 @@ from .art import (DIPLO_BG_MASK, ICON_SIZES, MOMENT_HALF_OPACITY, MOMENT_MASK,
                   shift_hue)
 from .workshop import STAMP_FILE
 from .moments import MOMENT_ILLUSTRATION_SIZE
+from .moods import fallback_slot, resolve_slot
+from .moods import slot_label as mood_label
 from .leaders import (colors_fragment, config_block,
                       gameplay_block, icons_fragment, inherited_text_sql,
                       needs_art, normalize_spec, text_rows)
@@ -419,7 +421,7 @@ FILES
   <ModFolder>.dep                art dependencies (loads the cooked .blp)
   Platforms/*/BLPs/              cooked icons, loading-screen and
                                  diplomacy (fallback) images
-  ArtDefs/FallbackLeaders.artdef diplomacy-screen image per leader
+  ArtDefs/FallbackLeaders.artdef diplomacy-screen image(s) per leader
 
 INSTALL
   Copy this folder into:
@@ -438,7 +440,11 @@ NOTES
   * No 3D leader scene is generated; the diplomacy screen shows the 2D
     fallback image made from the loading portrait. A 3D scene requires
     the Blender -> Asset Editor art pipeline and is outside this
-    generator's scope.
+    generator's scope. Leaders with diplomacy portraits by mood list
+    them in FallbackLeaders.artdef under the names of the animations
+    the diplomacy screen plays (HAPPY_IDLE, UNHAPPY_NEGATIVE,
+    DECLARE_WAR_FROM_AI, ...); other names show the DEFAULT (neutral)
+    image.
   * Custom icons, loading portraits, loading backgrounds and diplomacy
     backgrounds are cooked into .blp packages with the Civ VI SDK asset
     cooker (install "Sid Meier's Civilization VI Development Tools" from
@@ -894,6 +900,7 @@ def build_art(ctxs, folder, mod_dir, report, cooker,
     def inherit_art(c):
         c["leader_icon"] = c["icon_inherit"]
         c["load_fg"] = c["load_bg"] = c["diplo_bg"] = None
+        c["mood_images"] = []
         c["moments"] = []           # no rows pointing at missing art
 
     def give_up(reason):
@@ -948,6 +955,32 @@ def build_art(ctxs, folder, mod_dir, report, cooker,
             report.append("edited " + m["texture"])
         convert(m["texture"], moment_src, size=MOMENT_ILLUSTRATION_SIZE)
 
+    def convert_moods(c, textures):
+        """Convert a leader's diplomacy portraits by mood (fitted like the
+        portrait) into textures: {slot: texture}, NEUTRAL already there. A
+        picture that cannot be made is dropped; its slot shows the one it
+        falls back to."""
+        done, failed = set(textures.values()), set()
+        for slot, path, texture in c["mood_images"]:
+            if texture in failed:
+                continue
+            if texture not in done:
+                try:
+                    src = os.path.join(pantry, texture + "_fitted.png")
+                    fitted_portrait(path).save(src)
+                    convert(texture, src, kind="fallback")
+                except Exception as exc:  # unreadable image, disk error...
+                    report.append(
+                        "WARNING: {} - could not convert the {} diplomacy "
+                        "portrait ({}); the {} one is used".format(
+                            c["name"], mood_label(slot).lower(), exc,
+                            mood_label(resolve_slot(fallback_slot(slot),
+                                                    textures)).lower()))
+                    failed.add(texture)
+                    continue
+                done.add(texture)
+            textures[slot] = texture
+
     try:
         ui_textures, fallbacks, icon_leader_files = [], [], []
         for i, c in enumerate(wanted, 1):
@@ -986,7 +1019,8 @@ def build_art(ctxs, folder, mod_dir, report, cooker,
                     # the diplomacy screen's 2D fallback uses the same
                     # picture, cooked as a LeaderFallback texture
                     convert(c["fallback_name"], fg_src, kind="fallback")
-                    fallback = (c["slug"], c["fallback_name"])
+                    fallback = (c["slug"], {"NEUTRAL": c["fallback_name"]})
+                    convert_moods(c, fallback[1])
                 if c["load_bg"]:
                     bg_src = c["load_bg_path"]
                     if c["load_bg_hue"]:
@@ -1080,7 +1114,9 @@ def build_art(ctxs, folder, mod_dir, report, cooker,
             packages[ui_package] = ("ui", ui_textures)
         if fallbacks:
             packages[fallback_package] = (
-                "fallback", [tex for _, tex in fallbacks])
+                "fallback", list(dict.fromkeys(
+                    tex for _, textures in fallbacks
+                    for tex in textures.values())))
         if not packages:
             return give_up(None)
         progress("Cooking art with the SDK asset cooker (this can take "

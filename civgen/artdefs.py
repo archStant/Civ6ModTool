@@ -4,6 +4,7 @@ import copy
 import os
 import xml.etree.ElementTree as ET
 
+from .moods import resolve as mood_animations
 from .util import xml_escape
 
 
@@ -11,18 +12,12 @@ FALLBACK_ARTDEF = "FallbackLeaders.artdef"
 
 
 def build_fallback_artdef(package, fallbacks):
-    """Cooked FallbackLeaders.artdef: leader type -> its fallback texture.
-    fallbacks: (leader type, texture name) pairs. The game merges this
-    with the other FallbackLeaders.artdef files by element name."""
-    leaders = "\n".join("""			<Element>
-				<m_Fields>
-					<m_Values/>
-				</m_Fields>
-				<m_ChildCollections>
-					<Element>
-						<m_CollectionName text="Animations"/>
-						<m_ReplaceMergedCollectionElements>false</m_ReplaceMergedCollectionElements>
-						<Element>
+    """Cooked FallbackLeaders.artdef: leader type -> its fallback textures.
+    fallbacks: (leader type, {mood slot: texture name}) pairs, the NEUTRAL
+    slot always there; each leader gets one entry per animation name (see
+    moods.resolve). The game merges this with the other
+    FallbackLeaders.artdef files by element name."""
+    animation = """						<Element>
 							<m_Fields>
 								<m_Values>
 									<Element class="AssetObjects..BLPEntryValue">
@@ -36,15 +31,27 @@ def build_fallback_artdef(package, fallbacks):
 								</m_Values>
 							</m_Fields>
 							<m_ChildCollections/>
-							<m_Name text="DEFAULT"/>
+							<m_Name text="{name}"/>
 							<m_AppendMergedParameterCollections>false</m_AppendMergedParameterCollections>
-						</Element>
+						</Element>"""
+    leaders = "\n".join("""			<Element>
+				<m_Fields>
+					<m_Values/>
+				</m_Fields>
+				<m_ChildCollections>
+					<Element>
+						<m_CollectionName text="Animations"/>
+						<m_ReplaceMergedCollectionElements>false</m_ReplaceMergedCollectionElements>
+{animations}
 					</Element>
 				</m_ChildCollections>
 				<m_Name text="{leader}"/>
 				<m_AppendMergedParameterCollections>false</m_AppendMergedParameterCollections>
-			</Element>""".format(leader=leader, texture=texture, package=package)
-        for leader, texture in fallbacks)
+			</Element>""".format(
+        leader=leader, animations="\n".join(
+            animation.format(name=name, texture=texture, package=package)
+            for name, texture in mood_animations(textures)))
+        for leader, textures in fallbacks)
     return """<?xml version="1.0" encoding="UTF-8" ?>
 <AssetObjects..ArtDefSet>
 	<m_Version>

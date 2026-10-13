@@ -19,8 +19,8 @@ import uuid
 import xml.etree.ElementTree as ET
 import zlib
 
-from civgen import (civs, landmarks, leaders, modbuild, modifiers,
-                    moments, project, unit_art, unit_models, uniques)
+from civgen import (artdefs, civs, landmarks, leaders, modbuild, modifiers,
+                    moments, moods, project, unit_art, unit_models, uniques)
 from civgen.gamedata import GameData
 from civgen.util import find_game_cache, find_game_dir
 
@@ -1232,6 +1232,151 @@ class LoadingBackgroundTest(unittest.TestCase):
                       leaders.leader_custom_marks(
                           dict(leaders.new_leader_spec(),
                                load_bg_default=True)))
+
+
+class MoodPortraitTest(unittest.TestCase):
+    """Diplomacy portraits by mood: named entries of the fallback artdef
+    (no game cache needed)."""
+
+    # every animation the diplomacy screen asks a leader to play: the parts
+    # and initial animations of LeaderAnimations' sequences, and the
+    # statements' LeaderAnimation values
+    GAME_ANIMATIONS = {
+        "NEUTRAL_IDLE", "NEUTRAL_POSITIVE", "NEUTRAL_NEGATIVE",
+        "HAPPY_IDLE", "HAPPY_POSITIVE", "HAPPY_NEGATIVE",
+        "UNHAPPY_IDLE", "UNHAPPY_POSITIVE", "UNHAPPY_NEGATIVE",
+        "TO_HAPPY", "TO_NEUTRAL", "TO_UNHAPPY", "NEUTRAL_GREETING",
+        "NEUTRAL_TO_HAPPY", "NEUTRAL_TO_UNHAPPY", "UNHAPPY_TO_NEUTRAL",
+        "ENRAGED", "KUDOS", "WARNING", "DECLARE_WAR_FROM_HUMAN",
+        "DECLARE_WAR_FROM_AI", "FIRST_MEET", "DEFEAT"}
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="civgen_moods_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.happy = os.path.join(self.tmp, "happy.png")
+        shutil.copy(MOMENT_IMAGE, self.happy)
+
+    def normalize(self, **spec):
+        s = leaders.new_leader_spec()
+        s.update(name="Q", civ="CIVILIZATION_SUMERIA",
+                 orig="LEADER_GILGAMESH", load_fg_path=MOMENT_IMAGE)
+        s.update(spec)
+        return leaders.normalize_spec(s, LoadingBackgroundTest.NoData(),
+                                      "TST")
+
+    def test_slots_cover_the_game(self):
+        names = [name for slot in moods.MOOD_SLOTS for name in slot[5]]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertIn("DEFAULT", names)
+        self.assertEqual(self.GAME_ANIMATIONS - set(names), set())
+        for i, slot in enumerate(moods.MOOD_SLOTS):     # no loops
+            if slot[4]:
+                self.assertLess(moods.SLOT_KEYS.index(slot[4]), i)
+
+    def test_resolve(self):
+        self.assertEqual(moods.resolve({"NEUTRAL": "N"}), [("DEFAULT", "N")])
+        r = dict(moods.resolve({"NEUTRAL": "N", "HAPPY": "H"}))
+        self.assertEqual([r[n] for n in ("DEFAULT", "TO_NEUTRAL",
+                                         "UNHAPPY_IDLE", "NEUTRAL_POSITIVE")],
+                         ["N"] * 4)
+        self.assertEqual([r[n] for n in ("HAPPY_IDLE", "TO_HAPPY",
+                                         "HAPPY_POSITIVE", "KUDOS")],
+                         ["H"] * 4)
+        r = dict(moods.resolve({"NEUTRAL": "N", "DECLARES_WAR": "W"}))
+        self.assertEqual((r["DECLARE_WAR_FROM_AI"],
+                          r["DECLARE_WAR_FROM_HUMAN"]), ("W", "N"))
+        r = dict(moods.resolve({"NEUTRAL": "N", "ENRAGED": "E",
+                                "UNHAPPY": "U"}))
+        self.assertEqual((r["DECLARE_WAR_FROM_HUMAN"], r["WARNING"]),
+                         ("E", "U"))
+
+    def test_artdef(self):
+        root = ET.fromstring(artdefs.build_fallback_artdef("Pkg", [
+            ("LEADER_A", {"NEUTRAL": "FA"}),
+            ("LEADER_B", {"NEUTRAL": "FB", "UNHAPPY": "UB"})]))
+        found = {}
+        for leader in root.find("m_RootCollections/Element").findall(
+                "Element"):
+            entries = leader.find("m_ChildCollections/Element").findall(
+                "Element")
+            names = [e.find("m_Name").get("text") for e in entries]
+            self.assertEqual(len(names), len(set(names)))
+            found[leader.find("m_Name").get("text")] = {
+                e.find("m_Name").get("text"): e.find(
+                    "m_Fields/m_Values/Element/m_EntryName").get("text")
+                for e in entries}
+        self.assertEqual(found["LEADER_A"], {"DEFAULT": "FA"})
+        b = found["LEADER_B"]
+        self.assertEqual((b["DEFAULT"], b["HAPPY_IDLE"], b["WARNING"],
+                          b["UNHAPPY_NEGATIVE"]), ("FB", "FB", "UB", "UB"))
+
+    def test_normalize(self):
+        c = self.normalize()
+        self.assertEqual((c["fallback_name"], c["mood_images"]),
+                         ("FALLBACK_NEUTRAL_TST_Q", []))
+        # slot order; one texture per picture, the portrait's is reused
+        c = self.normalize(mood_images={
+            "KUDOS": self.happy, "HAPPY": self.happy,
+            "UNHAPPY": MOMENT_IMAGE, "WARNING": " "})
+        self.assertEqual(c["mood_images"], [
+            ("HAPPY", self.happy, "FALLBACK_HAPPY_TST_Q"),
+            ("UNHAPPY", MOMENT_IMAGE, "FALLBACK_NEUTRAL_TST_Q"),
+            ("KUDOS", self.happy, "FALLBACK_HAPPY_TST_Q")])
+        with self.assertRaisesRegex(ValueError, "happy diplomacy portrait "
+                                                "not found"):
+            self.normalize(mood_images={"HAPPY": self.happy + ".gone"})
+        for slot in ("NEUTRAL", "SMUG"):
+            with self.assertRaisesRegex(ValueError, "not a diplomacy"):
+                self.normalize(mood_images={slot: self.happy})
+        with self.assertRaisesRegex(ValueError, "need a Portrait"):
+            self.normalize(load_fg_path="", mood_images={"HAPPY": self.happy})
+        mark = ("\U0001F3AD", "diplomacy portraits")
+        self.assertIn(mark, leaders.leader_custom_marks(dict(
+            leaders.new_leader_spec(), mood_images={"HAPPY": "a.png"})))
+        self.assertNotIn(mark, leaders.leader_custom_marks(dict(
+            leaders.new_leader_spec(), mood_images={"HAPPY": ""})))
+
+    def test_build_art(self):
+        """Each picture is converted once and the leader's slots point at
+        it; one that cannot be read is dropped (the cooker is stubbed)."""
+        from unittest import mock
+        broken = os.path.join(self.tmp, "broken.png")
+        with open(broken, "w") as fh:
+            fh.write("not an image")
+        c = self.normalize(mood_images={
+            "HAPPY": self.happy, "KUDOS": self.happy, "UNHAPPY": broken})
+        cooked = {}
+
+        def cook_art(cooker, pantry, packages, fallbacks, mod_dir, report):
+            cooked.update(packages=packages, fallbacks=fallbacks,
+                          textures=sorted(os.listdir(os.path.join(
+                              pantry, "Textures"))))
+            return ["ArtDefs/FallbackLeaders.artdef"]
+
+        report = []
+        with mock.patch.object(modbuild, "cook_art", cook_art):
+            modbuild.build_art([c], "Mod", self.tmp, report, "cooker.exe")
+        self.assertEqual(cooked["fallbacks"], [("LEADER_TST_Q", {
+            "NEUTRAL": "FALLBACK_NEUTRAL_TST_Q",
+            "HAPPY": "FALLBACK_HAPPY_TST_Q",
+            "KUDOS": "FALLBACK_HAPPY_TST_Q"})])
+        self.assertEqual(cooked["packages"]["Mod_Fallbacks"], (
+            "fallback", ["FALLBACK_NEUTRAL_TST_Q", "FALLBACK_HAPPY_TST_Q"]))
+        self.assertIn("FALLBACK_HAPPY_TST_Q.dds", cooked["textures"])
+        self.assertTrue(any("could not convert the unhappy diplomacy "
+                            "portrait" in line and "the neutral one" in line
+                            for line in report), report)
+
+    def test_export_import(self):
+        spec = dict(leaders.new_leader_spec(), name="Q",
+                    mood_images={"HAPPY": self.happy})
+        zip_path = os.path.join(self.tmp, "out.zip")
+        project.export_leaders([spec], zip_path)
+        os.remove(self.happy)           # imported elsewhere
+        specs, _, _ = project.import_leaders(zip_path)
+        moved = specs[0]["mood_images"]["HAPPY"]
+        self.assertNotEqual(moved, self.happy)
+        self.assertTrue(os.path.isfile(moved))
 
 
 class UnitAtlasTest(unittest.TestCase):

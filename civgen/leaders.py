@@ -9,6 +9,7 @@ from .modifiers import effects_sql, summary
 from .civs import STANDARD_DOMAINS
 from .uniques import player_item_sql
 from .moments import normalize_moments
+from .moods import SLOT_KEYS as MOOD_SLOT_KEYS, slot_label as mood_label
 from .art import (DEFAULT_ICON_BORDER_COLOR, DEFAULT_ICON_BORDER_WIDTH,
                   DEFAULT_LOAD_BG,
                   _cached, fitted_portrait, make_circle_icon,
@@ -23,11 +24,12 @@ from .texts import (DIPLO_TEXT, PEDIA_HISTORY, PEDIA_PREFIX, PEDIA_TEXT,
 CUSTOM_MARKS = [
     ("\U0001F5BC", "loading background"),
     ("\U0001F3DB", "diplomacy background"),
+    ("\U0001F3AD", "diplomacy portraits"),
     ("\U0001F3AF", "agenda"),
     ("\U0001F396", "leader ability"),
     ("\U0001F4AC", "diplomacy text"),
     ("\U0001F4D6", "Civilopedia"),
-    ("⭐", "historic moments"),
+    # ("⭐", "historic moments"),
 ]
 
 
@@ -41,6 +43,7 @@ def leader_custom_marks(spec):
         filled(spec.get("load_bg_path")) or bool(spec.get("load_bg_default"))
         or bool(spec.get("load_bg_hue")),
         filled(spec.get("diplo_bg_path")),
+        any(filled(path) for path in (spec.get("mood_images") or {}).values()),
         any(filled(spec.get(k)) for k in ("agenda", "agenda_name",
                                           "agenda_desc")),
         any(filled(text.get("name")) or filled(text.get("desc"))
@@ -68,6 +71,8 @@ def leader_custom_marks(spec):
 #   icon_mode ('portrait' or 'file'), icon_crop ((x, y, r) in fitted
 #   portrait pixels, see fit_portrait, or None), icon_border_color,
 #   icon_border_width,
+#   mood_images ({mood slot key: image path}: diplomacy-screen images by
+#   mood or moment, see moods.py; the portrait is the neutral one),
 #   moment_illustrations (older projects only: see moments.py; they now
 #   belong to civilizations),
 #   agenda (AGENDA_ type, "" = the original leader's), agenda_name,
@@ -96,6 +101,7 @@ def new_leader_spec():
         "icon_mode": "portrait", "icon_crop": None,
         "icon_border_color": DEFAULT_ICON_BORDER_COLOR,
         "icon_border_width": DEFAULT_ICON_BORDER_WIDTH,
+        "mood_images": {},
         "moment_illustrations": [],
         "agenda": "", "agenda_name": "", "agenda_desc": "",
         "abilities": {},
@@ -178,6 +184,23 @@ def normalize_spec(spec, data, prefix="", civs=None):
             raise ValueError("{}: {} image not found: {}".format(
                 name, label, path))
         images[key] = path
+    # diplomacy-screen images by mood (the portrait is the neutral one)
+    mood_paths = {}
+    for key, path in (spec.get("mood_images") or {}).items():
+        path = (path or "").strip()
+        if not path:
+            continue
+        if key == "NEUTRAL" or key not in MOOD_SLOT_KEYS:
+            raise ValueError("{}: '{}' is not a diplomacy portrait.".format(
+                name, key))
+        if not os.path.isfile(path):
+            raise ValueError("{}: {} diplomacy portrait not found: {}".format(
+                name, mood_label(key).lower(), path))
+        mood_paths[key] = path
+    if mood_paths and not images["load_fg_path"]:
+        raise ValueError("{}: the diplomacy portraits need a Portrait "
+                         "(General tab) too - it is the neutral one."
+                         .format(name))
     # (older projects: pictures of a game civilization's items; the
     # project's civilizations hold their own)
     moments = normalize_moments(spec.get("moment_illustrations"), name, slug)
@@ -235,6 +258,18 @@ def normalize_spec(spec, data, prefix="", civs=None):
     # portrait mode without a portrait: keep the inherited icon
     icon_custom = bool(icon_path if icon_mode == "file"
                        else images["load_fg_path"])
+    # one fallback texture per distinct image, named after the first slot
+    # that uses it (each is a full-size texture in the mod)
+    fallback_name = "FALLBACK_NEUTRAL_" + slug[len("LEADER_"):]
+    textures = {os.path.normcase(os.path.abspath(images["load_fg_path"])):
+                fallback_name} if images["load_fg_path"] else {}
+    mood_images = []
+    for key in MOOD_SLOT_KEYS:
+        if key in mood_paths:
+            texture = textures.setdefault(
+                os.path.normcase(os.path.abspath(mood_paths[key])),
+                "FALLBACK_{}_{}".format(key, slug[len("LEADER_"):]))
+            mood_images.append((key, mood_paths[key], texture))
 
     # a new ability of the leader's own, with effects from the editor
     given = spec.get("new_ability") or {}
@@ -344,7 +379,10 @@ def normalize_spec(spec, data, prefix="", civs=None):
         "load_bg": load_bg_name if images["load_bg_path"] else None,
         # 2D diplomacy-screen image (made from the loading portrait),
         # named like the SDK template's FALLBACK_NEUTRAL_JASPERKITTY
-        "fallback_name": "FALLBACK_NEUTRAL_" + slug[len("LEADER_"):],
+        "fallback_name": fallback_name,
+        # ... and the ones it changes to by mood: [(slot, path, texture)]
+        # (a texture may be shared, also with the portrait's)
+        "mood_images": mood_images,
         # diplomacy-screen background (DiplomacyInfo.BackgroundImage)
         "diplo_bg_path": images["diplo_bg_path"],
         "diplo_bg_name": slug + "_DIPLO_BG",

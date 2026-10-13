@@ -307,7 +307,7 @@ def cook_art(cooker, pantry, packages, fallbacks, mod_dir, report):
     """Cook the texture packages and write the fallback artdef (if any).
 
     packages: {package name: (texture kind, [texture names])}
-    fallbacks: (leader type, fallback texture name) pairs
+    fallbacks: (leader type, {mood slot: fallback texture name}) pairs
     Writes mod_dir/Platforms/*/BLPs/*.blp and mod_dir/ArtDefs/*.artdef.
     Returns the mod-relative paths of all cooked files ([] on failure)."""
     pantry_arg = os.path.join(pantry, "")

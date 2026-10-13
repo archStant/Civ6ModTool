@@ -16,6 +16,8 @@ from ..texts import (DIPLO_TEXT, PEDIA_HISTORY, PEDIA_TEXT,
                      texts_to_json)
 from ..modifiers import describe_effects
 from ..leaders import AI_TRAITS, DEFAULT_AI_TRAITS, spec_icon_mode
+from ..moods import MOOD_GROUPS, MOOD_SLOTS, resolve_slot
+from ..moods import slot_label as mood_label
 from . import theme
 from .widgets import WRITE_TIP, write_description
 from .widgets import fit_to_screen
@@ -29,6 +31,15 @@ LEGACY_MOMENTS_HELP = (
     "This leader's civilization is one of the game's, so the pictures it "
     "had in an older project stay here: they still work, and can be "
     "changed or removed.\n\n" + MOMENTS_HELP)
+PORTRAITS_HELP = (
+    "The diplomacy screen shows the leader as a still image (generated "
+    "leaders have no 3D scene): the Portrait from the General tab. Here "
+    "it can change with the leader's mood and with what is happening - "
+    "hover over a name to see when it is shown. An empty slot shows the "
+    "image named next to it. Use pictures with the same size and framing "
+    "as the Portrait (they are fitted the same way), so the leader does "
+    "not jump between them. Each different picture adds about 9 MB to "
+    "the mod.")
 
 
 class LeaderEditor(tk.Toplevel):
@@ -56,6 +67,8 @@ class LeaderEditor(tk.Toplevel):
         diplo = ScrollFrame(notebook)
         pedia = ScrollFrame(notebook)
         notebook.add(general, text="General")
+        portraits = ScrollFrame(notebook)
+        notebook.add(portraits, text="Diplomacy portraits")
         ability = ScrollFrame(notebook)
         notebook.add(ability, text="Ability")
         agenda = ScrollFrame(notebook, height=None)
@@ -66,6 +79,7 @@ class LeaderEditor(tk.Toplevel):
         notebook.add(pedia, text="Civilopedia")
 
         self._build_general(general.inner, spec)
+        self._build_portraits(portraits.inner, spec)
         self.on_name_changed()          # show the type right away
         texts = spec_texts(spec)
         self.text_widgets = {}          # tag template -> tk.Text
@@ -389,6 +403,8 @@ class LeaderEditor(tk.Toplevel):
             self._preview_photos[key] = photo
             self.preview_labels[key].configure(image=photo or "",
                                                text="" if photo else text)
+        if getattr(self, "mood_thumbs", None):  # (built after this tab)
+            self._refresh_mood_thumbs()
 
     def _load_bg_hue(self):
         """The hue shift in degrees (0 while the field is being typed)."""
@@ -396,6 +412,97 @@ class LeaderEditor(tk.Toplevel):
             return max(-180, min(180, int(self.load_bg_hue.get())))
         except (tk.TclError, ValueError):
             return 0
+
+    # thumbnails of the diplomacy portraits (fitted to 800 x 1080)
+    MOOD_THUMB = (48, 64)
+
+    def _build_portraits(self, body, spec):
+        """One image per slot of MOOD_SLOTS; the neutral one is the
+        General tab's portrait."""
+        pad = {"padx": 6, "pady": 2}
+        ttk.Label(body, text=PORTRAITS_HELP, wraplength=820,
+                  justify="left").grid(row=0, column=0, columnspan=6,
+                                       sticky="w", pady=(0, 4))
+        given = spec.get("mood_images") or {}
+        self.mood_vars, self.mood_thumbs, self.mood_notes = {}, {}, {}
+        self._mood_photos = {}
+        row = 1
+        for group, title in MOOD_GROUPS:
+            ttk.Label(body, text=title, font=("TkDefaultFont", 10, "bold")
+                      ).grid(row=row, column=0, columnspan=6, sticky="w",
+                             pady=(10, 2))
+            row += 1
+            for key, slot_group, label, tip, _, _ in MOOD_SLOTS:
+                if slot_group != group:
+                    continue
+                name = ttk.Label(body, text=label + " (?)")
+                name.grid(row=row, column=0, sticky="w", padx=(12, 6),
+                          pady=2)
+                add_tooltip(name, tip)
+                frame = tk.Frame(body, width=self.MOOD_THUMB[0],
+                                 height=self.MOOD_THUMB[1],
+                                 background="#%02x%02x%02x" %
+                                 PREVIEW_BACKDROP[:3])
+                frame.grid(row=row, column=1, **pad)
+                frame.pack_propagate(False)
+                thumb = tk.Label(frame, background=frame["background"])
+                thumb.pack(fill="both", expand=True)
+                self.mood_thumbs[key] = thumb
+                if key == "NEUTRAL":        # set on the General tab
+                    ttk.Entry(body, textvariable=self.load_fg_path, width=50,
+                              state="readonly").grid(row=row, column=2,
+                                                     sticky="w", **pad)
+                else:
+                    var = tk.StringVar(value=given.get(key, ""))
+                    self.mood_vars[key] = var
+                    ttk.Entry(body, textvariable=var, width=50).grid(
+                        row=row, column=2, sticky="w", **pad)
+                    ttk.Button(
+                        body, text="Browse...",
+                        command=lambda v=var, t=label: self.browse_image(
+                            v, t + " diplomacy portrait")).grid(
+                        row=row, column=3, sticky="w", **pad)
+                    ttk.Button(body, text="Clear", width=6,
+                               command=lambda v=var: v.set("")).grid(
+                        row=row, column=4, sticky="w", **pad)
+                    var.trace_add("write",
+                                  lambda *_: self._schedule_previews())
+                note = ttk.Label(body, foreground=theme.hint())
+                note.grid(row=row, column=5, sticky="w", **pad)
+                self.mood_notes[key] = note
+                row += 1
+        self._refresh_mood_thumbs()
+
+    def _refresh_mood_thumbs(self):
+        """Each slot's thumbnail shows what the diplomacy screen would: its
+        own image, or (noted in grey) the one it falls back to."""
+        paths = {key: var.get().strip()
+                 for key, var in self.mood_vars.items()}
+        paths["NEUTRAL"] = self.load_fg_path.get().strip()
+        filled = {key for key, path in paths.items() if path}
+        for key, thumb in self.mood_thumbs.items():
+            shown = resolve_slot(key, filled)
+            if key == "NEUTRAL":
+                note = "the Portrait (General tab)" if paths[key] else \
+                    "no Portrait: set one on the General tab first"
+            else:
+                note = "" if paths[key] else "uses: " + mood_label(shown)
+            photo = None
+            try:
+                from PIL import ImageTk
+                if paths[key] and not os.path.isfile(paths[key]):
+                    note = "(file not found)"
+                img = preview_image(paths[shown], self.MOOD_THUMB,
+                                    portrait=True)
+                if img is not None:
+                    photo = ImageTk.PhotoImage(img)
+            except ImportError:
+                pass                    # no thumbnails without Pillow
+            except Exception as exc:    # unreadable image
+                note = "(cannot preview: {})".format(exc)
+            self._mood_photos[key] = photo
+            thumb.configure(image=photo or "")
+            self.mood_notes[key].configure(text=note)
 
     def _text_field(self, parent, key, label, height, texts, row):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="nw",
@@ -1092,6 +1199,9 @@ class LeaderEditor(tk.Toplevel):
             "icon_crop": tuple(self.icon_crop) if self.icon_crop else None,
             "icon_border_color": tuple(self.icon_border_color),
             "icon_border_width": int(self.icon_border_width),
+            "mood_images": {key: var.get().strip()
+                            for key, var in self.mood_vars.items()
+                            if var.get().strip()},
             "moment_illustrations": self.moments_frame.entries()
             if self.moments_frame else [],
             "agenda": self._agenda_type(),
