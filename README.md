@@ -4,7 +4,7 @@ A desktop tool for making Civilization VI mods without writing SQL or XML. It ge
 
 - **Leaders**: alternate leaders for existing civilizations, or new leaders with their own ability, agenda and AI personality, and diplomacy-screen portraits that can change with their mood.
 - **Civilizations**: new civilizations with an ability, city and citizen names, start bias, Civilopedia text, art style and music.
-- **Uniques**: unique units, buildings, districts and improvements, either copied from the game's items and changed, or made from scratch, with their own stats, yields, effects, placement rules and 3D models.
+- **Uniques**: unique units, buildings, districts and improvements, either copied from the game's items and changed, or made from scratch, with their own stats, yields, effects, placement rules and 3D models. They belong to a civilization, or to a single leader (like the game's Rough Rider for Teddy Roosevelt), also a leader of an existing civilization.
 
 The output is a complete mod folder that the game loads like any other mod. It can be published on the Steam Workshop with the SDK's uploader.
 

@@ -26,12 +26,12 @@ def kind_word(kind):
     return MAIN_TABLES[kind][1][:-len("Type")].upper()
 
 
-def own_types(civ_specs, prefix):
-    """[(current type, kind, name part)] of the civilizations' uniques:
-    UNIT_SZ_ASKARI, "unit", "ASKARI"."""
+def own_types(specs, prefix):
+    """[(current type, kind, name part)] of the uniques of civilization
+    and leader specs: UNIT_SZ_ASKARI, "unit", "ASKARI"."""
     out = []
-    for civ in civ_specs:
-        for u in civ.get("uniques") or []:
+    for owner in specs:
+        for u in owner.get("uniques") or []:
             kind = u.get("kind")
             if kind not in MAIN_TABLES or not (u.get("name") or "").strip():
                 continue
@@ -75,10 +75,12 @@ def retarget(value, mapping):
     return count
 
 
-def prefix_change(civ_specs, old_prefix, new_prefix):
-    """{type with the old prefix: type with the new} of the uniques."""
+def prefix_change(civ_specs, old_prefix, new_prefix, leader_specs=()):
+    """{type with the old prefix: type with the new} of the uniques (the
+    civilizations' and the leaders' own)."""
+    specs = list(civ_specs) + list(leader_specs)
     return {o: n for (o, _, _), (n, _, _) in zip(
-        own_types(civ_specs, old_prefix), own_types(civ_specs, new_prefix))
+        own_types(specs, old_prefix), own_types(specs, new_prefix))
         if o != n}
 
 
@@ -97,10 +99,10 @@ def _strings(value, out):
 
 def stale_references(leader_specs, civ_specs, prefix, is_game_type):
     """{stale type: current type}: strings in the specs that look like one
-    of the civilizations' uniques under another (or no) prefix -
-    UNIT_ASKARI or UNIT_XX_ASKARI for UNIT_SZ_ASKARI - and are not a type
-    of the game (is_game_type(type))."""
-    own = own_types(civ_specs, prefix)
+    of the uniques (the civilizations' and the leaders') under another
+    (or no) prefix - UNIT_ASKARI or UNIT_XX_ASKARI for UNIT_SZ_ASKARI -
+    and are not a type of the game (is_game_type(type))."""
+    own = own_types(list(civ_specs) + list(leader_specs), prefix)
     current = {t for t, _, _ in own}
     found = _strings([leader_specs, civ_specs], set())
     mapping = {}
@@ -131,7 +133,8 @@ def repair(leader_specs, civ_specs, prefix, data):
                                is_game_type)
     if not data.conn:                   # bare forms may be the game's
         bare = {"{}_{}".format(kind_word(k), n)
-                for _, k, n in own_types(civ_specs, prefix)}
+                for _, k, n in own_types(list(civ_specs) +
+                                         list(leader_specs), prefix)}
         mapping = {s: c for s, c in mapping.items() if s not in bare}
     if mapping:
         retarget(leader_specs, mapping)

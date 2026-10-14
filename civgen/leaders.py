@@ -8,7 +8,7 @@ from .gamedata import TRAIT_RULE_TABLES
 from .modifiers import check_effects, effects_sql, summary
 from .agendas import normalize_own_agenda, own_agenda_sql
 from .civs import STANDARD_DOMAINS
-from .uniques import player_item_sql
+from .uniques import normalize_unique, player_item_sql
 from .moments import normalize_moments
 from .moods import SLOT_KEYS as MOOD_SLOT_KEYS, slot_label as mood_label
 from .art import (DEFAULT_ICON_BORDER_COLOR, DEFAULT_ICON_BORDER_WIDTH,
@@ -28,6 +28,7 @@ CUSTOM_MARKS = [
     ("\U0001F3AD", "diplomacy portraits"),
     ("\U0001F3AF", "agenda"),
     ("\U0001F396", "leader ability"),
+    ("⚔", "uniques"),
     ("\U0001F4AC", "diplomacy text"),
     ("\U0001F4D6", "Civilopedia"),
     # ("⭐", "historic moments"),
@@ -50,6 +51,7 @@ def leader_custom_marks(spec):
         or bool(spec.get("own_agenda")),
         any(filled(text.get("name")) or filled(text.get("desc"))
             for text in (spec.get("abilities") or {}).values()),
+        bool(spec.get("uniques")),
         any(k in texts for _, lines in DIPLO_TEXT for k, _ in lines),
         any(k in texts for k, _, _, _ in PEDIA_TEXT),
         any(filled(entry.get("path"))
@@ -331,11 +333,25 @@ def normalize_spec(spec, data, prefix="", civs=None):
         raise ValueError("{}: diplomacy scene '{}' must be a LEADER_ type."
                          .format(name, scene_leader))
 
+    # unique items of its own (as a civilization's, see uniques.py)
+    uniques, seen = [], set()
+    for unique in spec.get("uniques") or []:
+        u = normalize_unique(unique, {"name": name, "slug": slug,
+                                      "owner": "leader"}, data, prefix)
+        if u["slug"] in seen:
+            raise ValueError("{}: two uniques have the type {} - rename "
+                             "one.".format(name, u["slug"]))
+        seen.add(u["slug"])
+        uniques.append(u)
+
     meta = data.meta(orig)
     icon_inherit = (meta.get("icon") or "ICON_{}".format(orig)) if orig \
         else DEFAULT_LEADER_ICON
     return {
         "name": name,
+        # its own unique items (contexts, see uniques.normalize_unique;
+        # written by modbuild after the leaders, whose rows they need)
+        "uniques": uniques,
         "slug": slug,
         # the type is already in the loaded game data - usually an earlier
         # build of this very mod; the caller decides whether that is fine
@@ -459,11 +475,25 @@ def ability_config_column(c, column, key):
 
 
 def config_block(c):
-    """Setup-screen SQL fragment (Players + PlayerItems) for one leader."""
+    """Setup-screen SQL fragment (Players + PlayerItems) for one leader,
+    its own uniques' items last."""
     if c.get("project_civ"):
-        return new_civ_config_block(c)
-    if not c["orig"]:
-        return new_leader_config_block(c)
+        out = new_civ_config_block(c)
+    elif not c["orig"]:
+        out = new_leader_config_block(c)
+    else:
+        out = alt_leader_config_block(c)
+    if c.get("uniques"):
+        out += "\n-- {}'s own unique items\n".format(c["slug"]) + "".join(
+            player_item_sql(u, c["slug"], 200 + 10 * i)
+            for i, u in enumerate(c["uniques"], 1))
+    return out
+
+
+def alt_leader_config_block(c):
+    """Setup-screen rows of a leader inheriting from a leader of a game
+    civilization: its rows with the leader's own name, icon and
+    portrait."""
     return """-----------------------------------------------
 -- Setup-screen rows for {slug} (civ fields and leader ability text
 -- inherited from {orig}; leader name, icon and portrait are new)

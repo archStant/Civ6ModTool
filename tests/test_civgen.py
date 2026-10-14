@@ -135,6 +135,11 @@ def sample_project():
     alt = leaders.new_leader_spec()
     alt.update(name="Jeanne", civ="CIVILIZATION_FRANCE",
                orig="LEADER_CATHERINE_DE_MEDICI", city_names=["Orleans"])
+    # a leader's own unique (of a game civilization)
+    guard = uniques.new_unique_spec("unit")
+    guard.update(base="UNIT_KNIGHT", name="Pucelle Guard",
+                 stats={"Combat": "52"})
+    alt["uniques"] = [guard]
 
     civ = civs.new_civ_spec()
     civ.update(name="Amazons", adjective="Amazonian",
@@ -258,9 +263,13 @@ def sample_project():
                  new_ability={"name": "Girdle of Ares", "replace": True,
                               "effects": [modifiers.new_effect("tourism")]})
     second = leaders.new_leader_spec()
+    lodge = uniques.new_unique_spec("building")
+    lodge.update(base="BUILDING_BARRACKS", name="War Lodge")
     second.update(name="Penthesilea", civ="CIVILIZATION_TST_AMAZONS",
                   orig="LEADER_TRAJAN", city_names=["Troy"],
-                  own_agenda=own_agenda())
+                  own_agenda=own_agenda(),
+                  # a leader's own unique (of the project's civilization)
+                  uniques=[lodge])
     # leaders that inherit from nobody, of the new and of a game civ
     third = leaders.new_leader_spec()
     third.update(name="Antiope", civ="CIVILIZATION_TST_AMAZONS", orig="",
@@ -521,6 +530,56 @@ class GeneratedModTest(unittest.TestCase):
                          [("ABILITY_TST_AMAZON_WARRIOR",)])
         self.assertEqual(len(q("SELECT * FROM ModifierStrings WHERE "
                                "ModifierId = 'TST_AMAZON_WARRIOR_MOD_3'")), 1)
+
+    def test_leader_uniques(self):
+        """A leader's own uniques: given by a leader trait, as the game's
+        (the Rough Rider), shown on that leader's setup screen only."""
+        db = database("DebugGameplay.sqlite", self.tmp)
+        self.addCleanup(db.close)
+        db.executescript(read(self.mod_dir, "Gameplay/NewLeader_Gameplay.sql"))
+        self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
+        q = lambda sql: db.execute(sql).fetchall()    # noqa: E731
+        for leader, item, table, column in (
+                ("LEADER_TST_JEANNE", "UNIT_TST_PUCELLE_GUARD", "Units",
+                 "UnitType"),
+                ("LEADER_TST_PENTHESILEA", "BUILDING_TST_WAR_LODGE",
+                 "Buildings", "BuildingType")):
+            trait = "TRAIT_LEADER_" + item
+            self.assertEqual(q("SELECT TraitType FROM {} WHERE {} = '{}'"
+                               .format(table, column, item)), [(trait,)])
+            self.assertEqual(q("SELECT LeaderType FROM LeaderTraits WHERE "
+                               "TraitType = '{}'".format(trait)), [(leader,)])
+            self.assertEqual(q("SELECT * FROM CivilizationTraits WHERE "
+                               "TraitType = '{}'".format(trait)), [])
+        self.assertEqual(q("SELECT Combat FROM Units WHERE UnitType = "
+                           "'UNIT_TST_PUCELLE_GUARD'"), [(52,)])
+        self.assertEqual(q("SELECT ReplacesUnitType FROM UnitReplaces WHERE "
+                           "CivUniqueUnitType = 'UNIT_TST_PUCELLE_GUARD'"),
+                         [("UNIT_KNIGHT",)])
+        # the setup screen: the leader's own items, after the civ's
+        config = database("DebugConfiguration.sqlite", self.tmp)
+        self.addCleanup(config.close)
+        config.executescript(read(self.mod_dir, "Config/NewLeader_Config.sql"))
+
+        def items(leader):
+            return [t for (t,) in config.execute(
+                "SELECT Type FROM PlayerItems WHERE LeaderType = ? AND "
+                "Domain = 'Players:Expansion2_Players' ORDER BY SortIndex",
+                (leader,))]
+        jeanne = items("LEADER_TST_JEANNE")
+        self.assertEqual(jeanne[-1], "UNIT_TST_PUCELLE_GUARD")
+        self.assertEqual(set(jeanne[:-1]), set(items(
+            "LEADER_CATHERINE_DE_MEDICI")))
+        penthesilea = items("LEADER_TST_PENTHESILEA")
+        self.assertEqual(penthesilea[-1], "BUILDING_TST_WAR_LODGE")
+        self.assertIn("UNIT_TST_AMAZON_WARRIOR", penthesilea)
+        self.assertNotIn("BUILDING_TST_WAR_LODGE",
+                         items("LEADER_TST_HIPPOLYTA"))
+        # art (a copy of the base item's) and the README
+        self.assertIn('"UNIT_TST_PUCELLE_GUARD"',
+                      read(self.mod_dir, "ArtDefs/Units.artdef"))
+        self.assertIn("unit Pucelle Guard (UNIT_TST_PUCELLE_GUARD)",
+                      read(self.mod_dir, "README.txt"))
 
     def test_own_agenda(self):
         """An agenda of a leader's own: its likes and dislikes are simple
@@ -2329,6 +2388,76 @@ class EffectFormsTest(unittest.TestCase):
         self.assertEqual(texts, [])
 
 
+class LeaderUniquesTest(unittest.TestCase):
+    """Uniques of a leader's own (no game needed)."""
+
+    class NoData(NewLeaderTest.NoData):
+        items = {}
+
+        def item(self, kind, t):
+            return None
+
+        def leader_unique_items(self, leader):
+            return []
+
+        def uniques_for(self, civ, leader):
+            return []
+
+    def test_trait_and_sql(self):
+        u = uniques.new_unique_spec("building")
+        u.update(name="War Lodge", base="BUILDING_BARRACKS")
+        ctx = uniques.normalize_unique(
+            u, {"name": "Liberty", "slug": "LEADER_TST_LIBERTY",
+                "owner": "leader"}, NewItemTest.NoData(), "TST")
+        self.assertEqual((ctx["trait"], ctx["label"]),
+                         ("TRAIT_LEADER_BUILDING_TST_WAR_LODGE",
+                          "War Lodge (Liberty)"))
+        sql, _, _ = uniques.unique_sql(ctx, lambda kind, t: t)
+        self.assertIn("INSERT INTO LeaderTraits (LeaderType, TraitType)\n"
+                      "VALUES ('LEADER_TST_LIBERTY', "
+                      "'TRAIT_LEADER_BUILDING_TST_WAR_LODGE');", sql)
+        self.assertNotIn("CivilizationTraits", sql)
+        # (a civilization's, as before)
+        ctx = uniques.normalize_unique(u, NewItemTest.civ,
+                                       NewItemTest.NoData(), "TST")
+        self.assertEqual(ctx["trait"],
+                         "TRAIT_CIVILIZATION_BUILDING_TST_WAR_LODGE")
+
+    def test_leader_spec(self):
+        leader_specs, _ = sample_project()
+        jeanne = leader_specs[0]
+        c = leaders.normalize_spec(jeanne, self.NoData(), "TST")
+        self.assertEqual([u["slug"] for u in c["uniques"]],
+                         ["UNIT_TST_PUCELLE_GUARD"])
+        self.assertIn("SELECT Domain, CivilizationType, LeaderType, "
+                      "'UNIT_TST_PUCELLE_GUARD'", leaders.config_block(c))
+        twice = dict(jeanne, uniques=jeanne["uniques"] * 2)
+        with self.assertRaisesRegex(ValueError, "two uniques have the type"):
+            leaders.normalize_spec(twice, self.NoData(), "TST")
+        self.assertIn(("\u2694", "uniques"),
+                      leaders.leader_custom_marks(jeanne))
+
+    def test_references_export_and_workshop(self):
+        from civgen import references, workshop
+        leader_specs, civ_specs = sample_project()
+        mapping = references.prefix_change(civ_specs, "TST", "SZ",
+                                           leader_specs)
+        self.assertEqual(mapping["UNIT_TST_PUCELLE_GUARD"],
+                         "UNIT_SZ_PUCELLE_GUARD")
+        self.assertIn("UNIT_TST_AMAZON_WARRIOR", mapping)
+        jeanne = leader_specs[0]
+        jeanne["uniques"][0]["icon_path"] = "C:/art/guard.png"
+        holders = project._spec_images(jeanne)
+        self.assertIn((jeanne["uniques"][0], "icon_path"), holders)
+        self.assertIn((jeanne, "load_fg_path"), holders)
+        self.assertNotIn((civ_specs[0], "load_fg_path"),
+                         project._spec_images(civ_specs[0]))
+        text = workshop.generated_description("Amazons", civ_specs,
+                                              leader_specs)
+        self.assertIn("Pucelle Guard", text)
+        self.assertIn("War Lodge", text)
+
+
 class OwnAgendaTest(unittest.TestCase):
     """An agenda of a leader's own (advanced mode); no game needed."""
 
@@ -2501,6 +2630,16 @@ class EffectGameDataTest(unittest.TestCase):
         self.assertIn("Temple of Ares (Amazons): effect 2 - ", text)
         self.assertIn("no modifier NO_SUCH_MODIFIER", text)
         self.assertIn("Hippolyta (leader ability): effect 2 - ", text)
+
+    def test_leader_unique_types_clash(self):
+        leader_specs, civ_specs = sample_project()
+        twin = uniques.new_unique_spec("unit")
+        twin.update(name="Amazon Warrior", base="UNIT_SWORDSMAN")
+        leader_specs[0]["uniques"].append(twin)
+        _, _, errors = modbuild.prepare_project(leader_specs, civ_specs,
+                                                game_data(), "TST")
+        self.assertIn("Jeanne: duplicate type UNIT_TST_AMAZON_WARRIOR "
+                      "(already used by Amazons)", "\n".join(errors))
 
     def test_same_effect_ids(self):
         leader_specs, civ_specs = sample_project()

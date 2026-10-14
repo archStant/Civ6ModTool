@@ -24,10 +24,10 @@ from .leaders import (colors_fragment, config_block,
                       gameplay_block, icons_fragment, inherited_text_sql,
                       needs_art, normalize_spec, text_rows)
 from .civs import (CIV_ICON_SIZES, DEFAULT_MUSIC, civ_gameplay_sql,
-                   civ_icons_sql, civ_text_rows, normalize_civ)
+                   civ_icons_sql, civ_text_rows, normalize_civ, sql_header)
 from .uniques import ART as UNIQUE_ART
 from .uniques import ICON_SIZES as UNIQUE_ICON_SIZES
-from .uniques import unique_icons_sql
+from .uniques import unique_icons_sql, unique_sql, unique_text_rows
 from .unit_art import describe as describe_unit_art
 from .unit_art import is_custom as is_custom_art
 from .unit_art import unique_unit_art
@@ -458,6 +458,19 @@ def readme_abilities(c):
         for a in c["abilities"])
 
 
+def readme_unique(u):
+    """README line of a unique item (a civilization's or a leader's)."""
+    return "      {} {} ({}), {}{}{}".format(
+        u["kind"], u["name"], u["slug"],
+        "a copy of " + u["base"] if u["base"] else
+        "new" + (" (in {})".format(u["district"]) if u["district"]
+                 else ""),
+        ", replacing " + u["replaced"] if u["replaced"] else
+        ", replacing nothing",
+        "; 3D model: " + describe_unit_art(u["art"])
+        if is_custom_art(u.get("art")) else "")
+
+
 def readme_civs(civs):
     """README section on new civilizations, or ""."""
     if not civs:
@@ -469,16 +482,7 @@ def readme_civs(civs):
                          cc["name"], cc["slug"],
                          cc["ability"]["name"] or cc["ability"]["clone"][0],
                          len(cc["city_names"]), len(cc["uniques"])))
-        lines += ["      {} {} ({}), {}{}{}".format(
-            u["kind"], u["name"], u["slug"],
-            "a copy of " + u["base"] if u["base"] else
-            "new" + (" (in {})".format(u["district"]) if u["district"]
-                     else ""),
-            ", replacing " + u["replaced"] if u["replaced"] else
-            ", replacing nothing",
-            "; 3D model: " + describe_unit_art(u["art"])
-            if is_custom_art(u.get("art")) else "")
-            for u in cc["uniques"]]
+        lines += [readme_unique(u) for u in cc["uniques"]]
     return """CIVILIZATIONS
 {}
 
@@ -500,20 +504,23 @@ def build_readme(mod_name, ctxs, icon_count, report, civs=(),
                  modinfo="MyLeader.modinfo"):
     lines = "\n".join(
         "  * {name} ({slug}) - {civ}, inherits from {orig}{ability}{agenda}"
-        "{cities}".format(
+        "{cities}{uniques}".format(
             name=c["name"], slug=c["slug"], civ=c["civ"],
             orig=c["orig_label"],
             ability=readme_abilities(c), agenda=readme_agenda(c),
             cities="; {} own city names, capital {}".format(
                 len(c["city_names"]), c["city_names"][0][1])
-            if c["city_names"] else "")
+            if c["city_names"] else "",
+            uniques="".join("\n" + readme_unique(u)
+                            for u in c.get("uniques") or []))
         for c in ctxs)
     return """{mod_name} (generated)
 ======================================================
 
 An alternate-leader pack. Each leader inherits the ability of its
 original leader and, unless another one was chosen, its AI agenda, and
-shares the civilization's uniques. All gameplay effects are inherited;
+shares the civilization's uniques (plus any listed with it, its own
+leader uniques). All gameplay effects are inherited;
 everything textual and visual is defined by this mod's own files.
 
 {civs}LEADERS
@@ -597,6 +604,13 @@ GENERATION LOG
 # Validating a whole project
 # ---------------------------------------------------------------------------
 
+def all_uniques(civs, ctxs):
+    """The unique item contexts of civilization contexts civs and leader
+    contexts ctxs: the civilizations', then the leaders' own."""
+    return [u for cc in civs for u in cc["uniques"]] + \
+        [u for c in ctxs for u in c.get("uniques") or []]
+
+
 def prepare_project(leader_specs, civ_specs, data, prefix=""):
     """Validate every civilization and leader spec of a project. Returns
     (civ contexts, leader contexts, errors); every problem found is in
@@ -618,19 +632,6 @@ def prepare_project(leader_specs, civ_specs, data, prefix=""):
             continue
         seen.update((t, cc["name"]) for t in types)
         civ_ctxs.append(cc)
-    # effects' ids are their owner's type without its first word, so a
-    # unit and a building of one name would share them
-    effect_ids = {}
-    for cc in civ_ctxs:
-        for u in cc["uniques"]:
-            if not u["effects"]:
-                continue
-            short = u["slug"].split("_", 1)[-1]
-            if short in effect_ids:
-                errors.append("{} and {} both have effects and the same "
-                              "name - rename one of them.".format(
-                                  effect_ids[short], u["label"]))
-            effect_ids[short] = u["label"]
     civs = {cc["slug"]: cc for cc in civ_ctxs}
     by_id = {cc["id"]: cc["slug"] for cc in civ_ctxs if cc["id"]}
     ctxs = []
@@ -643,13 +644,28 @@ def prepare_project(leader_specs, civ_specs, data, prefix=""):
         except ValueError as exc:
             errors.append(str(exc))
             continue
-        if c["slug"] in seen:
+        types = [c["slug"]] + [u["slug"] for u in c["uniques"]]
+        clash = next((t for t in types if t in seen), None)
+        if clash:
             errors.append("{}: duplicate type {} (already used by {}) - "
                           "rename one of them.".format(
-                              c["name"], c["slug"], seen[c["slug"]]))
+                              c["name"], clash, seen[clash]))
             continue
-        seen[c["slug"]] = c["name"]
+        seen.update((t, c["name"]) for t in types)
         ctxs.append(c)
+    uniques = all_uniques(civ_ctxs, ctxs)
+    # effects' ids are their owner's type without its first word, so a
+    # unit and a building of one name would share them
+    effect_ids = {}
+    for u in uniques:
+        if not u["effects"]:
+            continue
+        short = u["slug"].split("_", 1)[-1]
+        if short in effect_ids:
+            errors.append("{} and {} both have effects and the same name "
+                          "- rename one of them.".format(effect_ids[short],
+                                                        u["label"]))
+        effect_ids[short] = u["label"]
     for owner in civ_ctxs + ctxs:
         for m in owner["moments"]:
             # MomentIllustrations is keyed by the item
@@ -662,7 +678,7 @@ def prepare_project(leader_specs, civ_specs, data, prefix=""):
             seen[("moment", m["item"])] = owner["name"]
     # references to items: one of the project's or of the game's - the
     # game refuses a mod referring to a type that does not exist
-    own = {u["slug"]: u["kind"] for cc in civ_ctxs for u in cc["uniques"]}
+    own = {u["slug"]: u["kind"] for u in uniques}
 
     def known(item, kind=None):
         if item in own:
@@ -681,15 +697,13 @@ def prepare_project(leader_specs, civ_specs, data, prefix=""):
                     "(was the unique renamed, or the type prefix "
                     "changed?). Pick its item again on the Historic "
                     "moments tab.".format(owner["name"], m["item"]))
-    for cc in civ_ctxs:
-        for u in cc["uniques"]:
-            if u["kind"] == "building" and u["district"] and \
-                    not known(u["district"], "district"):
-                errors.append(
-                    "{}: it is built in {}, which is neither one of the "
-                    "project's districts nor in the game. Pick its "
-                    "district again (Stats tab).".format(u["label"],
-                                                        u["district"]))
+    for u in uniques:
+        if u["kind"] == "building" and u["district"] and \
+                not known(u["district"], "district"):
+            errors.append(
+                "{}: it is built in {}, which is neither one of the "
+                "project's districts nor in the game. Pick its district "
+                "again (Stats tab).".format(u["label"], u["district"]))
     led = {c["civ"] for c in ctxs}
     for cc in civ_ctxs:
         if cc["slug"] not in led:
@@ -719,16 +733,17 @@ def write_mod(mod_name, ctxs, folder, mod_dir, guid, cooker, report,
     icon_jobs = [(cc, cc["icon_path"], CIV_ICON_SIZES) for cc in civs
                  if cc["icon_custom"]]
     # (a unit's source: its atlas cells, see uniques.normalize_unique)
+    uniques = all_uniques(civs, ctxs)
     icon_jobs += [(u, u["atlas_paths"] or u["icon_path"],
                    UNIQUE_ICON_SIZES[u["kind"]])
-                  for cc in civs for u in cc["uniques"] if u["icon_custom"]]
+                  for u in uniques if u["icon_custom"]]
     (icon_leader_files, cooked_files, ui_package,
      fallback_package) = build_art(ctxs, folder, mod_dir, report,
                                    cooker, progress, icon_jobs,
                                    [cc for cc in civs if cc["moments"]])
     progress("Writing mod files...")
     # after build_art, which clears ArtDefs/ unless it cooked fallbacks
-    artdef_files = write_civ_artdefs(civs, mod_dir, report)
+    artdef_files = write_civ_artdefs(civs, mod_dir, report, uniques)
     dep_file = folder + ".dep" if cooked_files or artdef_files else None
     # (after the art fallback, which drops pictures it could not make)
     has_moments = any(c["moments"] for c in list(ctxs) + list(civs))
@@ -739,9 +754,17 @@ def write_mod(mod_name, ctxs, folder, mod_dir, guid, cooker, report,
         if xp2:
             xp2_sql.append(xp2)
         civ_texts += civ_text_rows(cc) + texts
+    # the leaders' own uniques: after the leaders, whose rows they need
+    leader_unique_sql = []
+    for c in ctxs:
+        for u in c["uniques"]:
+            sql, xp2, texts = unique_sql(u, name_of)
+            leader_unique_sql.append("\n" + sql)
+            if xp2:
+                xp2_sql.append(sql_header(u) + xp2)
+            civ_texts += unique_text_rows(u) + texts
     icons_sql = "\n".join(filter(None, [civ_icons_sql(cc) for cc in civs] +
-                                 [unique_icons_sql(u) for cc in civs
-                                  for u in cc["uniques"]]))
+                                 [unique_icons_sql(u) for u in uniques]))
 
     # leaders without a diplomacy background of their own show the
     # original leader's layered scene through a patched LeaderScene.lua
@@ -844,7 +867,8 @@ def write_mod(mod_name, ctxs, folder, mod_dir, guid, cooker, report,
     write("Config/NewLeader_Colors.xml", build_colors_xml(ctxs))
     # civilizations first: their leaders' rows refer to them
     write("Gameplay/NewLeader_Gameplay.sql",
-          "\n".join(civ_sql) + build_gameplay_sql(ctxs))
+          "\n".join(civ_sql) + build_gameplay_sql(ctxs) +
+          "".join(leader_unique_sql))
     write("Text/NewLeader_Text.sql", build_text_sql(ctxs, civ_texts))
     write("README.txt", build_readme(mod_name, ctxs,
                                     len(icon_leader_files), report, civs,
@@ -865,11 +889,12 @@ def first_building(game_dir, district, own_landmarks):
     return drawn[0] if drawn else None
 
 
-def write_civ_artdefs(civs, mod_dir, report):
+def write_civ_artdefs(civs, mod_dir, report, uniques=()):
     """ArtDefs/*.artdef of the new civilizations (music, city and unit
-    styles) and their uniques (renamed copies of the base items' art).
-    Returns the file names written."""
-    if not civs:
+    styles) and of uniques - the civilizations' and the leaders' own, see
+    all_uniques (renamed copies of the base items' art). Returns the file
+    names written."""
+    if not civs and not uniques:
         return []
     game_dir = find_game_dir()
     music = civilization_music(game_dir)
@@ -898,8 +923,7 @@ def write_civ_artdefs(civs, mod_dir, report):
             unit_cultures.setdefault(cc["unit_culture"], []).append(
                 cc["slug"])
     # districts first: buildings may be built in them
-    uniques = sorted((u for cc in civs for u in cc["uniques"]),
-                     key=lambda u: u["kind"] != "district")
+    uniques = sorted(uniques, key=lambda u: u["kind"] != "district")
     landmark_of = {}     # project district -> the landmark that draws it
     for u in uniques:
         filename, collection = UNIQUE_ART[u["kind"]]
@@ -989,8 +1013,10 @@ def write_civ_artdefs(civs, mod_dir, report):
             landmark_elements.append(landmark_xml(
                 district, lm["fields"], *[sum((p[i] for p in parts), [])
                                           for i in range(3)]))
-    files = {CIVILIZATIONS_ARTDEF: build_artdef(
-        "Civilizations", [("Civilization", civ_elements)])}
+    files = {}
+    if civ_elements:
+        files[CIVILIZATIONS_ARTDEF] = build_artdef(
+            "Civilizations", [("Civilization", civ_elements)])
     if cultures or unit_cultures:
         files[CULTURES_ARTDEF] = build_artdef("Cultures", [
             (collection, [culture_element_xml(name, members)

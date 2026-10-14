@@ -22,7 +22,8 @@ from ..leaders import (CUSTOM_MARKS, leader_custom_marks, leader_icon_preview,
 from ..civs import (CIV_BADGE_COLOR, civ_icon_preview, civ_slug,
                     new_civ_spec)
 from ..uniques import KINDS, MAIN_TABLES
-from ..modbuild import check_extra_files, prepare_project, write_mod
+from ..modbuild import (all_uniques, check_extra_files, prepare_project,
+                        write_mod)
 from ..moments import move_to_civs as move_moments_to_civs
 from ..workshop import (UPLOADER_EXE, build_stamp, find_uploader,
                         new_workshop_spec, normalize_workshop, plain_text,
@@ -666,7 +667,7 @@ class GeneratorApp(tk.Tk):
             messagebox.showinfo("No selection",
                                 "Select a leader in the list first.")
             return
-        spec = dict(self.project["leaders"][i])
+        spec = copy.deepcopy(self.project["leaders"][i])
         spec["name"] = (spec.get("name") or "Leader") + " copy"
         self.project["leaders"].insert(i + 1, spec)
         self._refresh_leader_list()
@@ -1024,14 +1025,15 @@ class GeneratorApp(tk.Tk):
     # -- generation -----------------------------------------------------------------
 
     def _prefix_changed(self):
-        """Point references to the civilizations' uniques (moment
-        pictures, districts, effects) at their types with the new
-        prefix."""
+        """Point references to the uniques (the civilizations' and the
+        leaders': moment pictures, districts, effects) at their types with
+        the new prefix."""
         new = self.type_prefix()
         old, self._last_prefix = getattr(self, "_last_prefix", new), new
         if old == new:
             return
-        mapping = prefix_change(self.project["civs"], old, new)
+        mapping = prefix_change(self.project["civs"], old, new,
+                                self.project["leaders"])
         if mapping:
             retarget(self.project["civs"], mapping)
             retarget(self.project["leaders"], mapping)
@@ -1104,9 +1106,9 @@ class GeneratorApp(tk.Tk):
         self.project["guid"] = guid
 
         # may ask for the cooker - dialogs must happen before the worker
-        wants_art = any(needs_art(c) for c in ctxs) or any(
-            cc["icon_custom"] or any(u["icon_custom"] for u in cc["uniques"])
-            for cc in civs)
+        wants_art = any(needs_art(c) for c in ctxs) or \
+            any(cc["icon_custom"] for cc in civs) or \
+            any(u["icon_custom"] for u in all_uniques(civs, ctxs))
         cooker = self._cooker_path() if wants_art else None
 
         # 3) convert, cook and write in a thread behind a progress window

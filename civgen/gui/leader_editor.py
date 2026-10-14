@@ -16,6 +16,8 @@ from ..texts import (DIPLO_TEXT, PEDIA_HISTORY, PEDIA_TEXT,
                      texts_to_json)
 from ..modifiers import describe_effects
 from ..leaders import AI_TRAITS, DEFAULT_AI_TRAITS, spec_icon_mode
+from ..references import retarget
+from ..uniques import KINDS
 from ..moods import MOOD_GROUPS, MOOD_SLOTS, resolve_slot
 from ..moods import slot_label as mood_label
 from . import theme
@@ -25,6 +27,7 @@ from .widgets import icon_text
 from .widgets import IconCropDialog, ScrollFrame, add_tooltip
 from .modifier_editor import EffectsFrame
 from .agenda_editor import ReactionsFrame
+from .uniques_frame import UniquesFrame, unique_choices
 from .moments_editor import HELP as MOMENTS_HELP, MomentsFrame
 
 LEGACY_MOMENTS_HELP = (
@@ -54,6 +57,8 @@ class LeaderEditor(tk.Toplevel):
         super().__init__(app)
         self.app = app
         self.result = None
+        # (the uniques' until their tab is built)
+        self.spec_uniques = spec.get("uniques") or []
         self.title(title)
         self.resizable(False, False)
         self.transient(app)
@@ -74,6 +79,8 @@ class LeaderEditor(tk.Toplevel):
         notebook.add(ability, text="Ability")
         agenda = ScrollFrame(notebook, height=None)
         notebook.add(agenda, text="Agenda")
+        uniques = ScrollFrame(notebook, height=None)
+        notebook.add(uniques, text="Uniques")
         cities = ScrollFrame(notebook, height=None)
         notebook.add(cities, text="City names")
         notebook.add(diplo, text="Diplomacy text")
@@ -88,6 +95,7 @@ class LeaderEditor(tk.Toplevel):
         self._build_pedia(pedia.inner, texts)
         self._build_abilities(ability.inner, spec)
         self._build_agenda(agenda.inner, spec)
+        self._build_uniques(uniques.inner, spec)
         self._build_cities(cities.inner, spec)
         # historic moment pictures belong to civilizations now; a leader
         # of a game civilization from an older project keeps its own
@@ -797,7 +805,8 @@ class LeaderEditor(tk.Toplevel):
                   foreground=theme.hint()).grid(row=2, column=1, sticky="w",
                                             padx=6)
         self.new_ability_effects = EffectsFrame(box, self.app, "trait",
-                                                new.get("effects"))
+                                                new.get("effects"),
+                                                self._unique_types)
         self.new_ability_effects.grid(row=3, column=0, columnspan=3,
                                       sticky="we", pady=(6, 0))
         self.new_ability_effects.listbox.configure(height=5)
@@ -1031,10 +1040,62 @@ class LeaderEditor(tk.Toplevel):
 
     def _unique_items(self):
         civ, orig = self.civ_var.get().strip(), self._orig()
+        mine = [t for kind in KINDS for t, _ in self._own_unique_types(kind)]
         own = self.app.project_civ_uniques(civ)
         if own is not None:             # one of the project's civilizations
-            return own + self.app.data.leader_unique_items(orig)
-        return self.app.data.uniques_for(civ, orig)
+            return mine + own + self.app.data.leader_unique_items(orig)
+        return mine + self.app.data.uniques_for(civ, orig)
+
+    # -- uniques of its own -------------------------------------------------
+
+    def _build_uniques(self, parent, spec):
+        self.unique_frame = UniquesFrame(
+            parent, self.app, spec.get("uniques"),
+            lambda: self.name_var.get().strip(), (
+                "Unique units, buildings, districts and improvements of "
+                "this leader's own, like the game's leader uniques (Teddy "
+                "Roosevelt's Rough Rider): a player with this leader has "
+                "them on top of the civilization's. Each is a copy of an "
+                "existing one (its 3D art and icons too) with your "
+                "changes, and normally replaces it for this leader."),
+            others=self._civ_unique_types, changed=self._refresh_moment_items,
+            renamed=self._retarget)
+        self.unique_frame.pack(fill="both", expand=True)
+
+    def _own_unique_types(self, kind):
+        frame = getattr(self, "unique_frame", None)
+        if frame is None:               # (still building the tabs)
+            return unique_choices(self.spec_uniques, kind,
+                                  self.app.type_prefix())
+        return frame.own_types(kind)
+
+    def _civ_unique_types(self, kind):
+        """The uniques of the leader's civilization, if one of the
+        project's (a building of the leader's may be built in its
+        district, say)."""
+        civ = self.app.project_civs().get(self.civ_var.get().strip())
+        return unique_choices((civ or {}).get("uniques"), kind,
+                              self.app.type_prefix())
+
+    def _unique_types(self, kind):
+        """The leader's own uniques of a kind and its civilization's, for
+        effect dropdowns."""
+        own = self._own_unique_types(kind)
+        known = {t for t, _ in own}
+        return own + [c for c in self._civ_unique_types(kind)
+                      if c[0] not in known]
+
+    def _retarget(self, mapping):
+        """References to a renamed unique of the leader's (its ability's
+        effects, moment pictures) follow it."""
+        retarget(self.new_ability_effects.items, mapping)
+        self.new_ability_effects.refresh()
+        if self.moments_frame:
+            for row in self.moments_frame.rows:
+                item = row["item"].get().strip().upper()
+                if item in mapping:
+                    row["item"].set(mapping[item])
+        self._refresh_moment_items()
 
     def _refresh_moment_items(self):
         if getattr(self, "moments_frame", None):
@@ -1253,6 +1314,7 @@ class LeaderEditor(tk.Toplevel):
             "agenda_name": self.agenda_name_var.get().strip(),
             "agenda_desc": self.agenda_desc.get("1.0", "end").strip(),
             "own_agenda": None,
+            "uniques": self.unique_frame.uniques(),
             "abilities": self.abilities(),
             "city_names": self.city_names(),
             "new_ability": self.new_ability(),

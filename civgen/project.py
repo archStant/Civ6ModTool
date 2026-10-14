@@ -115,16 +115,16 @@ TUPLE_KEYS = ("primary", "secondary", "icon_border_color", "icon_crop")
 
 def _spec_images(spec):
     """(holder, key) of every image path a leader or civilization spec
-    refers to."""
-    if "uniques" in spec:               # a civilization
-        refs = [(spec, "icon_path")] + [(u, key) for u in spec["uniques"]
-                                        for key in ("icon_path",
-                                                    "portrait_path")]
-    else:
+    refers to (their uniques' too)."""
+    if "orig" in spec:                  # a leader
         refs = [(spec, key) for key in IMAGE_KEYS]
         moods = spec.get("mood_images")
         if isinstance(moods, dict):     # diplomacy portraits by mood
             refs += [(moods, slot) for slot in sorted(moods)]
+    else:
+        refs = [(spec, "icon_path")]
+    refs += [(u, key) for u in spec.get("uniques") or []
+             for key in ("icon_path", "portrait_path")]
     refs += [(entry, "path") for entry in spec.get("moment_illustrations")
              or []]
     return refs
@@ -193,6 +193,9 @@ def import_leaders(path):
             civ.setdefault("uniques", [])
         for spec in specs:
             if (not isinstance(spec, dict) or "name" not in spec
+                    or not isinstance(spec.get("uniques", []), list)
+                    or not all(isinstance(u, dict)
+                               for u in spec.get("uniques", []))
                     or not all(isinstance(entry, dict) for entry in
                                spec.get("moment_illustrations") or [])):
                 raise ValueError("The export contains a malformed leader "
