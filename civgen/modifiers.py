@@ -404,6 +404,7 @@ ARG_KINDS = {
     "GreatPersonClassType": "great_person",
     "UnitPromotionClass": "promotion_class",
     "PromotionClassType": "promotion_class", "UnitDomain": "domain",
+    "DomainType": "domain",
     "AbilityType": "ability",
 }
 
@@ -662,17 +663,29 @@ def _display(kind, value, name_of):
     return value
 
 
-def _arg_display(name, value, name_of):
+# first words of game types (YIELD_GOLD: Gold), dropped from a value of an
+# argument without a kind; other values keep all their words (SURPRISE_WAR:
+# Surprise War)
+TYPE_WORDS = ("YIELD", "DISTRICT", "BUILDING", "UNIT", "TERRAIN", "FEATURE",
+              "RESOURCE", "IMPROVEMENT", "ERA", "TECH", "CIVIC", "ABILITY",
+              "LEADER", "CIVILIZATION", "BELIEF", "POLICY", "GOVERNMENT",
+              "DOMAIN", "TRAIT", "AGENDA", "PROJECT", "GOVERNOR", "SLOT")
+
+
+def arg_display(name, value, name_of):
     """An argument's value for summaries."""
     value = str(value).strip()
     if name in ARG_KINDS:
         return _display(ARG_KINDS[name], value, name_of)
-    return type_display_name(value) if value.isupper() and "_" in value \
-        else value
+    if not (value.isupper() and "_" in value):
+        return value
+    if value.split("_", 1)[0] in TYPE_WORDS:
+        return type_display_name(value)
+    return value.replace("_", " ").title()
 
 
 def _args_text(args, name_of, skip=()):
-    return ", ".join("{} {}".format(name, _arg_display(name, value, name_of))
+    return ", ".join("{} {}".format(name, arg_display(name, value, name_of))
                      for name, value in sorted(args.items())
                      if name not in skip)
 
@@ -743,7 +756,7 @@ def _req_label(req, name_of):
         args = req.get("args") or {}
         if len(args) == 1:
             (name, value), = args.items()
-            label += " " + _arg_display(name, value, name_of)
+            label += " " + arg_display(name, value, name_of)
         elif args:
             label += " ({})".format(_args_text(args, name_of))
     return ("not: " if req.get("not") else "") + label

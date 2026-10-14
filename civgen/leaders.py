@@ -6,6 +6,7 @@ import re
 from .util import asset_path, slug_for_name, sql_str, value_or_column
 from .gamedata import TRAIT_RULE_TABLES
 from .modifiers import check_effects, effects_sql, summary
+from .agendas import normalize_own_agenda, own_agenda_sql
 from .civs import STANDARD_DOMAINS
 from .uniques import player_item_sql
 from .moments import normalize_moments
@@ -45,7 +46,8 @@ def leader_custom_marks(spec):
         filled(spec.get("diplo_bg_path")),
         any(filled(path) for path in (spec.get("mood_images") or {}).values()),
         any(filled(spec.get(k)) for k in ("agenda", "agenda_name",
-                                          "agenda_desc")),
+                                          "agenda_desc"))
+        or bool(spec.get("own_agenda")),
         any(filled(text.get("name")) or filled(text.get("desc"))
             for text in (spec.get("abilities") or {}).values()),
         any(k in texts for _, lines in DIPLO_TEXT for k, _ in lines),
@@ -77,6 +79,8 @@ def leader_custom_marks(spec):
 #   belong to civilizations),
 #   agenda (AGENDA_ type, "" = the original leader's), agenda_name,
 #   agenda_desc (either one filled = a renamed copy of that agenda),
+#   own_agenda (advanced mode: an agenda of its own instead, {"name",
+#   "desc", "reactions"} - see agendas.py; None or absent: none),
 #   abilities ({TraitType: {"name": ..., "desc": ...}} of the original
 #   leader's ability traits; either one filled = a renamed copy),
 #   city_names ([name, ...], the first is the capital; [] = the
@@ -211,6 +215,13 @@ def normalize_spec(spec, data, prefix="", civs=None):
     agenda_name = (spec.get("agenda_name") or "").strip()
     agenda_desc = (spec.get("agenda_desc") or "").strip()
     agenda_type = "AGENDA_" + slug[len("LEADER_"):]
+    own_agenda = None
+    if spec.get("own_agenda"):
+        # (instead of a game agenda or a renamed copy of one)
+        own_agenda = normalize_own_agenda(spec["own_agenda"], name,
+                                          slug[len("LEADER_"):], data)
+        agenda = ""
+        agenda_name, agenda_desc = own_agenda["name"], own_agenda["desc"]
     known = {a["type"]: a for a in data.abilities(orig)}
     abilities = []
     # (without orig there is nothing inherited to rename)
@@ -304,7 +315,7 @@ def normalize_spec(spec, data, prefix="", civs=None):
                 "of its own - give it a name on the Ability tab.".format(
                     name))
         new_ability["replace"] = True       # nothing to add it to
-        if not agenda:
+        if not agenda and not own_agenda:
             raise ValueError("{}: a leader that inherits from nobody needs "
                              "an AI agenda - pick one on the Agenda tab."
                              .format(name))
@@ -398,7 +409,10 @@ def normalize_spec(spec, data, prefix="", civs=None):
         "agenda": agenda,
         "agenda_name": agenda_name,
         "agenda_desc": agenda_desc,
-        "agenda_clone": bool(agenda_name or agenda_desc),
+        "agenda_clone": bool(agenda_name or agenda_desc) and not own_agenda,
+        # ... or an agenda of its own (see agendas.normalize_own_agenda;
+        # its name and description are agenda_name / agenda_desc)
+        "own_agenda": own_agenda,
         "agenda_type": agenda_type,
         "agenda_name_tag": "LOC_{}_NAME".format(agenda_type),
         "agenda_desc_tag": "LOC_{}_DESCRIPTION".format(agenda_type),
@@ -612,6 +626,8 @@ def agenda_block(c):
     source's traits, so its behaviour (modifiers and AI lists, which are
     keyed by trait) is identical; only its name / description differ."""
     slug, orig = c["slug"], c["orig"]
+    if c["own_agenda"]:
+        return own_agenda_sql(slug, c["own_agenda"])
     if not orig:
         return new_agenda_block(c)
     if not c["agenda"] and not c["agenda_clone"]:
@@ -941,6 +957,8 @@ def text_rows(c):
     rows += [row(tag, city) for tag, city in c["city_names"]]
     pairs = [(c["agenda_name_tag"], c["agenda_name"]),
              (c["agenda_desc_tag"], c["agenda_desc"])]
+    if c["own_agenda"]:
+        pairs += c["own_agenda"]["texts"]
     for a in c["abilities"]:
         pairs += [(a["name_tag"], a["name"]), (a["desc_tag"], a["desc"])]
     new = c.get("new_ability")

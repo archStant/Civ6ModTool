@@ -324,6 +324,7 @@ class GameData:
         self.requirement_schema = {}
         self.modifier_ids = set()           # the game's ModifierIds
         self.requirement_set_ids = set()    # and RequirementSetIds
+        self._agenda_examples = None        # see agenda_examples
 
     # -- helpers -----------------------------------------------------------
 
@@ -611,6 +612,7 @@ class GameData:
                     schema[t]["args"].append((name, n, example, numeric))
             for entry in schema.values():
                 entry["args"].sort(key=lambda a: (-a[1], a[0]))
+        self._agenda_examples = None        # (read when first needed)
         self.modifier_ids = {m for (m,) in self._query(
             "SELECT ModifierId FROM Modifiers")}
         self.requirement_set_ids = {s for (s,) in self._query(
@@ -860,6 +862,40 @@ class GameData:
     def requirement_args(self, requirement_type):
         return (self.requirement_schema.get(requirement_type) or {}).get(
             "args") or []
+
+    def agenda_examples(self):
+        """How the game's agendas use each condition in their likes and
+        dislikes (see agendas.py): {requirement type: [{"value", "args",
+        "not", "text"}]} ({} without the cache)."""
+        if self._agenda_examples is None and self.conn:
+            from .agendas import SIMPLE_MODIFIER, STANDARD_REQS
+            standard = {r["type"] for r in STANDARD_REQS}
+            found = {}
+            for mod_id, req_id, req_type, inverse in self._query(
+                    "SELECT m.ModifierId, r.RequirementId, "
+                    "r.RequirementType, r.Inverse FROM AgendaTraits a "
+                    "JOIN TraitModifiers t USING (TraitType) JOIN Modifiers "
+                    "m USING (ModifierId) JOIN RequirementSetRequirements s "
+                    "ON s.RequirementSetId = m.SubjectRequirementSetId JOIN "
+                    "Requirements r USING (RequirementId) WHERE "
+                    "m.ModifierType = ? ORDER BY m.rowid",
+                    (SIMPLE_MODIFIER,)):
+                if req_type in standard:
+                    continue
+                args = dict(self._query(
+                    "SELECT Name, Value FROM ModifierArguments WHERE "
+                    "ModifierId = ?", (mod_id,)))
+                tag = args.get("SimpleModifierDescription")
+                found.setdefault(req_type, []).append({
+                    "value": args.get("InitialValue", ""),
+                    "args": dict(self._query(
+                        "SELECT Name, Value FROM RequirementArguments "
+                        "WHERE RequirementId = ?", (req_id,))),
+                    "not": bool(inverse),
+                    "text": (self.loc_text(tag) or self._loc(tag) or "")
+                    if tag else ""})
+            self._agenda_examples = found
+        return self._agenda_examples or {}
 
     def is_attach(self, modifier_type):
         """Whether a modifier type attaches another modifier (named by its

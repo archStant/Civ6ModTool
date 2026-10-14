@@ -12,12 +12,13 @@ The output is a complete mod folder that the game loads like any other mod. It c
 Any sort of modding beyond the above mentioned, such as new ressources, great people, yields, governors, beliefs, etc. etc. etc. will still require you to open ModBuddy and write the code yourself. In **Advanced mode** you can add those files of your own to the generated mod (see below).
 
 ## Advanced mode
-The **Advanced mode** switch in the toolbar (remembered between sessions) unlocks:
+The **Advanced mode** switch in the toolbar unlocks:
 
 - **Any game modifier as an effect**: besides the effect list, an effect can be any of the game's modifier types, with the arguments the game gives it suggested from its own uses.
 - **Any requirement**: conditions can be any of the game's requirement types, grouped so that *any one* or *all* of them are needed.
 - **Effects attaching effects**: e.g. an ability that gives every city with a Campus an effect of its own.
 - **Import from game...**: copy the effects of any ability, belief, building, district, improvement, unit ability, promotion, governor title or great person.
+- **An agenda of its own**: on a leader's Agenda tab, an AI agenda made of likes and dislikes of other civilizations. Each one is a change in opinion when the other civilization meets your conditions (from the conditions the game's agendas use, or any requirement), with the text the diplomacy screen shows and the reason the AI gives.
 - **Custom files...**: SQL, XML or Lua files of your own, copied into the mod and loaded with the action you choose.
 
 Basic mode keeps to the effect list. Advanced effects already in a project stay in the mod in either mode, but can only be edited in Advanced mode.

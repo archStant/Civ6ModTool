@@ -62,6 +62,31 @@ def template_label(t):
     return "{} - {}".format(t.category, t.label)
 
 
+def value_widget(parent, kind, value, choices, changed, width=36):
+    """(widget, getter) for a value of an argument / condition kind (an
+    ENUMS or KIND_LISTS key; anything else is typed in). choices(kind):
+    [(type, name)] of a GameData list; changed(): called on each edit."""
+    if kind in ENUMS:
+        labels = dict(ENUMS[kind])
+        var = tk.StringVar(value=labels.get(value, value))
+        widget = ttk.Combobox(parent, textvariable=var, width=width,
+                              state="readonly",
+                              values=[label for _, label in ENUMS[kind]])
+        back = {label: v for v, label in ENUMS[kind]}
+        widget.bind("<<ComboboxSelected>>", lambda e: changed())
+        return widget, lambda: back.get(var.get(), var.get())
+    if kind in KIND_LISTS:
+        widget = TypeCombo(parent, choices(KIND_LISTS[kind]), value,
+                           width=width)
+        widget.var.trace_add("write", lambda *_: changed())
+        return widget, widget.get_type
+    var = tk.StringVar(value=value)
+    var.trace_add("write", lambda *_: changed())
+    widget = ttk.Entry(parent, textvariable=var,
+                       width=10 if kind in ("int", "number") else width)
+    return widget, lambda: var.get().strip()
+
+
 class EffectDialog(tk.Toplevel):
     """Edit one effect. owner: "trait", "building", "district", "unit"
     (or "attached": the effect another one attaches); choices(kind) gives
@@ -176,27 +201,8 @@ class EffectDialog(tk.Toplevel):
         return next(t for t in self.templates if template_label(t) == label)
 
     def value_widget(self, parent, kind, value, width=36):
-        """(widget, getter) for a value of an argument / condition kind
-        (an ENUMS or KIND_LISTS key; anything else is typed in)."""
-        if kind in ENUMS:
-            labels = dict(ENUMS[kind])
-            var = tk.StringVar(value=labels.get(value, value))
-            widget = ttk.Combobox(parent, textvariable=var, width=width,
-                                  state="readonly",
-                                  values=[label for _, label in ENUMS[kind]])
-            back = {label: v for v, label in ENUMS[kind]}
-            widget.bind("<<ComboboxSelected>>", lambda e: self.refresh())
-            return widget, lambda: back.get(var.get(), var.get())
-        if kind in KIND_LISTS:
-            widget = TypeCombo(parent, self.choices(KIND_LISTS[kind]), value,
-                               width=width)
-            widget.var.trace_add("write", lambda *_: self.refresh())
-            return widget, widget.get_type
-        var = tk.StringVar(value=value)
-        var.trace_add("write", lambda *_: self.refresh())
-        widget = ttk.Entry(parent, textvariable=var,
-                           width=10 if kind in ("int", "number") else width)
-        return widget, lambda: var.get().strip()
+        return value_widget(parent, kind, value, self.choices, self.refresh,
+                            width)
 
     def _build_args(self):
         self._store_args()

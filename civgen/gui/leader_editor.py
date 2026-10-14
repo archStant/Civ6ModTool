@@ -24,6 +24,7 @@ from .widgets import fit_to_screen
 from .widgets import icon_text
 from .widgets import IconCropDialog, ScrollFrame, add_tooltip
 from .modifier_editor import EffectsFrame
+from .agenda_editor import ReactionsFrame
 from .moments_editor import HELP as MOMENTS_HELP, MomentsFrame
 
 LEGACY_MOMENTS_HELP = (
@@ -597,6 +598,8 @@ class LeaderEditor(tk.Toplevel):
     # -- agenda -------------------------------------------------------------
 
     AGENDA_INHERIT = "(inherit from original leader)"
+    # (advanced mode, see agendas.py)
+    AGENDA_OWN = "(an agenda of its own: the likes and dislikes below)"
 
     def _agenda_label(self, agenda):
         """Combobox text for an agenda type: 'Iron Crown (AGENDA_IRON_CROWN)
@@ -617,10 +620,14 @@ class LeaderEditor(tk.Toplevel):
     def _agenda_type(self):
         """Agenda type picked (or typed) in the combobox, "" = inherit."""
         text = self.agenda_var.get().strip()
-        if not text or text == self.AGENDA_INHERIT:
+        if not text or text in (self.AGENDA_INHERIT, self.AGENDA_OWN):
             return ""
         m = re.search(r"\((AGENDA_[A-Z0-9_]+)\)", text)
         return m.group(1) if m else text.upper()
+
+    def _own_agenda(self):
+        """Whether the leader gets an agenda of its own."""
+        return self.agenda_var.get().strip() == self.AGENDA_OWN
 
     def _source_agenda(self):
         """The agenda the leader gets (or copies): picked or inherited."""
@@ -641,12 +648,16 @@ class LeaderEditor(tk.Toplevel):
         ttk.Label(parent, text="Agenda").grid(row=1, column=0, sticky="w",
                                               **pad)
         agenda = (spec.get("agenda") or "").strip()
+        own = spec.get("own_agenda") or None
+        advanced = bool(self.app.advanced_var.get()) \
+            if hasattr(self.app, "advanced_var") else False
         self.agenda_var = tk.StringVar(
-            value=self._agenda_label(agenda) if agenda
-            else self.AGENDA_INHERIT)
+            value=self.AGENDA_OWN if own else self._agenda_label(agenda)
+            if agenda else self.AGENDA_INHERIT)
         combo = ttk.Combobox(
             parent, textvariable=self.agenda_var, width=70,
-            values=[self.AGENDA_INHERIT] + [
+            values=[self.AGENDA_INHERIT] +
+            ([self.AGENDA_OWN] if advanced or own else []) + [
                 self._agenda_label(a) for a in sorted(
                     self.app.data.agendas,
                     key=lambda a: self.app.data.agendas[a]["name"])])
@@ -655,26 +666,47 @@ class LeaderEditor(tk.Toplevel):
                                      foreground=theme.hint())
         self.agenda_info.grid(row=2, column=1, sticky="w", **pad)
 
-        ttk.Label(parent, text="New name").grid(row=3, column=0, sticky="w",
-                                                **pad)
-        self.agenda_name_var = tk.StringVar(value=spec.get("agenda_name", ""))
+        self.agenda_name_label = ttk.Label(parent, text="New name")
+        self.agenda_name_label.grid(row=3, column=0, sticky="w", **pad)
+        self.agenda_name_var = tk.StringVar(
+            value=own["name"] if own else spec.get("agenda_name", ""))
         ttk.Entry(parent, textvariable=self.agenda_name_var, width=40).grid(
             row=3, column=1, sticky="w", **pad)
-        ttk.Label(parent, text="New description").grid(row=4, column=0,
-                                                       sticky="nw", **pad)
+        self.agenda_desc_label = ttk.Label(parent, text="New description")
+        self.agenda_desc_label.grid(row=4, column=0, sticky="nw", **pad)
         box, self.agenda_desc = icon_text(parent, height=4, width=70,
                                           wrap="word", undo=True)
-        self.agenda_desc.insert("1.0", spec.get("agenda_desc", ""))
+        self.agenda_desc.insert("1.0", own.get("desc", "") if own
+                                else spec.get("agenda_desc", ""))
         box.grid(row=4, column=1, sticky="w", **pad)
-        ttk.Button(parent, text="Copy agenda's text into empty fields",
-                   command=self.copy_agenda_text).grid(
-            row=5, column=1, sticky="w", **pad)
+        self.agenda_copy_btn = ttk.Button(
+            parent, text="Copy agenda's text into empty fields",
+            command=self.copy_agenda_text)
+        self.agenda_copy_btn.grid(row=5, column=1, sticky="w", **pad)
+
+        # an agenda of its own: its likes and dislikes (advanced mode)
+        self.reactions_box = ttk.LabelFrame(parent, text="Likes and "
+                                            "dislikes", padding=(8, 4))
+        self.reactions_box.grid(row=6, column=0, columnspan=2, sticky="we",
+                                pady=(12, 0))
+        ttk.Label(self.reactions_box, wraplength=760, justify="left",
+                  foreground=theme.hint(), text=(
+                      "What this leader likes and dislikes in other "
+                      "civilizations, and how much. An empty description "
+                      "lists the likes' and dislikes' texts." if advanced
+                      else "Turn on Advanced mode in the toolbar to edit "
+                      "the likes and dislikes.")).pack(anchor="w",
+                                                       pady=(0, 4))
+        self.reactions = ReactionsFrame(
+            self.reactions_box, self.app, (own or {}).get("reactions"),
+            editable=advanced)
+        self.reactions.pack(anchor="w", fill="x")
 
         # the AI personality of a new leader (one inheriting has the
         # original leader's)
         self.ai_box = ttk.LabelFrame(parent, text="AI personality",
                                      padding=(8, 4))
-        self.ai_box.grid(row=6, column=0, columnspan=2, sticky="we",
+        self.ai_box.grid(row=7, column=0, columnspan=2, sticky="we",
                          pady=(12, 0))
         self.ai_info = ttk.Label(self.ai_box, foreground=theme.hint(),
                                  wraplength=760, justify="left")
@@ -951,6 +983,19 @@ class LeaderEditor(tk.Toplevel):
         self.city_text.insert("1.0", "\n".join(names))
 
     def _refresh_agenda_info(self):
+        own = self._own_agenda()
+        self.agenda_name_label.configure(text="Name" if own else "New name")
+        self.agenda_desc_label.configure(text="Description" if own
+                                         else "New description")
+        if own:
+            self.reactions_box.grid()
+            self.agenda_copy_btn.grid_remove()
+            self.agenda_info.configure(text=(
+                "An agenda of this leader's own: give it a name and its "
+                "likes and dislikes."))
+            return
+        self.reactions_box.grid_remove()
+        self.agenda_copy_btn.grid()
         agenda = self._source_agenda()
         info = self.app.data.agendas.get(agenda or "")
         if info:
@@ -1207,6 +1252,7 @@ class LeaderEditor(tk.Toplevel):
             "agenda": self._agenda_type(),
             "agenda_name": self.agenda_name_var.get().strip(),
             "agenda_desc": self.agenda_desc.get("1.0", "end").strip(),
+            "own_agenda": None,
             "abilities": self.abilities(),
             "city_names": self.city_names(),
             "new_ability": self.new_ability(),
@@ -1219,6 +1265,12 @@ class LeaderEditor(tk.Toplevel):
             "diplo_bg_path": self.diplo_bg_path.get().strip(),
             "diplo_bg_mask": bool(self.diplo_bg_mask.get()),
         }
+        if self._own_agenda():
+            # (its name and description are the agenda's own)
+            spec["own_agenda"] = {"name": spec.pop("agenda_name"),
+                                  "desc": spec.pop("agenda_desc"),
+                                  "reactions": self.reactions.reactions()}
+            spec.update(agenda_name="", agenda_desc="")
         if not spec["name"]:
             messagebox.showwarning("Missing name",
                                    "Please enter the leader's name.",

@@ -19,8 +19,9 @@ import uuid
 import xml.etree.ElementTree as ET
 import zlib
 
-from civgen import (artdefs, civs, landmarks, leaders, modbuild, modifiers,
-                    moments, moods, project, unit_art, unit_models, uniques)
+from civgen import (agendas, artdefs, civs, landmarks, leaders, modbuild,
+                    modifiers, moments, moods, project, unit_art, unit_models,
+                    uniques)
 from civgen.gamedata import GameData
 from civgen.util import find_game_cache, find_game_dir
 
@@ -105,6 +106,28 @@ def attaching_effect():
         {"type": "REQUIREMENT_CITY_HAS_BUILDING",
          "args": {"BuildingType": "BUILDING_LIBRARY"}}]}]
     return effect
+
+
+def own_agenda():
+    """An agenda of a leader's own (advanced mode): a like and a dislike."""
+    culture = {"value": "8", "text": "Admires cultured civilizations",
+               "reason": "(You have a rich culture.)",
+               "reqs": [{"type": "REQUIREMENT_PLAYER_YIELD_LEAD",
+                         "args": {"YieldType": "YIELD_CULTURE",
+                                  "YieldRatio": "1.15",
+                                  "MinimumDelta": "5"}}]}
+    neighbors = {"value": "-6", "text": "Distrusts neighbors who rule "
+                                        "differently", "reason": "",
+                 "reqs": [{"type": "REQUIREMENT_PLAYER_IS_NEIGHBOR"},
+                          {"type": "REQUIREMENT_PLAYER_HAS_SAME_GOVERNMENT",
+                           "not": True}]}
+    # an event (written "+12", as typed)
+    backstab = {"value": "+12", "text": "Admires bold strikes",
+                "reason": "",
+                "reqs": [{"type": "REQUIREMENT_PLAYER_DECLARED_WAR",
+                          "args": {"WarType": "SURPRISE_WAR"}}]}
+    return {"name": "Queen of the Steppe", "desc": "",
+            "reactions": [culture, neighbors, backstab]}
 
 
 def sample_project():
@@ -236,7 +259,8 @@ def sample_project():
                               "effects": [modifiers.new_effect("tourism")]})
     second = leaders.new_leader_spec()
     second.update(name="Penthesilea", civ="CIVILIZATION_TST_AMAZONS",
-                  orig="LEADER_TRAJAN", city_names=["Troy"])
+                  orig="LEADER_TRAJAN", city_names=["Troy"],
+                  own_agenda=own_agenda())
     # leaders that inherit from nobody, of the new and of a game civ
     third = leaders.new_leader_spec()
     third.update(name="Antiope", civ="CIVILIZATION_TST_AMAZONS", orig="",
@@ -497,6 +521,64 @@ class GeneratedModTest(unittest.TestCase):
                          [("ABILITY_TST_AMAZON_WARRIOR",)])
         self.assertEqual(len(q("SELECT * FROM ModifierStrings WHERE "
                                "ModifierId = 'TST_AMAZON_WARRIOR_MOD_3'")), 1)
+
+    def test_own_agenda(self):
+        """An agenda of a leader's own: its likes and dislikes are simple
+        diplomacy modifiers of its trait, like the game's agendas'."""
+        db = database("DebugGameplay.sqlite", self.tmp)
+        self.addCleanup(db.close)
+        db.executescript(read(self.mod_dir, "Gameplay/NewLeader_Gameplay.sql"))
+        self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
+        q = lambda sql: db.execute(sql).fetchall()    # noqa: E731
+        agenda = "AGENDA_TST_PENTHESILEA"
+        self.assertEqual(q("SELECT AgendaType FROM HistoricalAgendas WHERE "
+                           "LeaderType = 'LEADER_TST_PENTHESILEA'"),
+                         [(agenda,)])
+        self.assertEqual(q("SELECT Name FROM Agendas WHERE AgendaType = "
+                           "'{}'".format(agenda)),
+                         [("LOC_{}_NAME".format(agenda),)])
+        mods = q("SELECT m.ModifierId, m.ModifierType, "
+                 "m.SubjectRequirementSetId FROM AgendaTraits a JOIN "
+                 "TraitModifiers t USING (TraitType) JOIN Modifiers m USING "
+                 "(ModifierId) WHERE a.AgendaType = '{}' ORDER BY 1".format(
+                     agenda))
+        self.assertEqual([m[1] for m in mods],
+                         ["MODIFIER_PLAYER_DIPLOMACY_SIMPLE_MODIFIER"] * 3)
+        args = dict(q("SELECT Name, Value FROM ModifierArguments WHERE "
+                      "ModifierId = '{}'".format(mods[1][0])))
+        self.assertEqual(args["InitialValue"], "-6")
+        self.assertEqual(args["StatementKey"],
+                         "LOC_{}_REACTION_2_REASON".format(agenda))
+        # the game's standard conditions, then its own (one inverted)
+        self.assertEqual(q("SELECT r.RequirementType, r.Inverse FROM "
+                           "RequirementSetRequirements s JOIN Requirements r "
+                           "USING (RequirementId) WHERE s.RequirementSetId = "
+                           "'{}' ORDER BY r.RequirementId".format(mods[1][2])),
+                         [("REQUIREMENT_CIVILIZATION_LEVEL", 0),
+                          ("REQUIREMENT_PLAYER_MET_X_TURNS_AGO", 0),
+                          ("REQUIREMENT_PLAYER_IS_NEIGHBOR", 0),
+                          ("REQUIREMENT_PLAYER_HAS_SAME_GOVERNMENT", 1)])
+        # an event: written like the game's own (Tomyris' dislike of
+        # surprise wars): Triggered, met at all, fading
+        args = dict(q("SELECT Name, Value FROM ModifierArguments WHERE "
+                      "ModifierId = '{}'".format(mods[2][0])))
+        self.assertEqual((args["InitialValue"], args["ReductionTurns"],
+                          args["ReductionValue"]), ("12", "10", "-1"))
+        self.assertEqual(q("SELECT r.RequirementType, r.Triggered FROM "
+                           "RequirementSetRequirements s JOIN Requirements r "
+                           "USING (RequirementId) WHERE s.RequirementSetId = "
+                           "'{}' ORDER BY r.RequirementId".format(mods[2][2])),
+                         [("REQUIREMENT_CIVILIZATION_LEVEL", 0),
+                          ("REQUIREMENT_PLAYER_HAS_MET", 0),
+                          ("REQUIREMENT_PLAYER_DECLARED_WAR", 1)])
+        text = read(self.mod_dir, "Text/NewLeader_Text.sql")
+        self.assertIn("'LOC_{}_REACTION_1_REASON', '(You have a rich "
+                      "culture.)'".format(agenda), text)
+        # (no reason: the text; no description: the texts)
+        self.assertIn("'LOC_{}_REACTION_2_REASON', 'Distrusts neighbors"
+                      .format(agenda), text)
+        self.assertIn("'LOC_{}_DESCRIPTION', 'Admires cultured "
+                      "civilizations[NEWLINE]Distrusts".format(agenda), text)
 
     def test_custom_files(self):
         """Custom files are copied as they are and loaded by their
@@ -2247,6 +2329,120 @@ class EffectFormsTest(unittest.TestCase):
         self.assertEqual(texts, [])
 
 
+class OwnAgendaTest(unittest.TestCase):
+    """An agenda of a leader's own (advanced mode); no game needed."""
+
+    def normalize(self, own, **spec):
+        s = leaders.new_leader_spec()
+        s.update(name="Liberty", civ="CIVILIZATION_AMERICA", orig="",
+                 new_ability={"name": "Torch"}, own_agenda=own)
+        s.update(spec)
+        return leaders.normalize_spec(s, NewLeaderTest.NoData(), "TST")
+
+    def test_a_new_leader_may_have_only_its_own_agenda(self):
+        c = self.normalize(own_agenda())
+        self.assertEqual((c["agenda"], c["agenda_clone"],
+                          c["agenda_name"]),
+                         ("", False, "Queen of the Steppe"))
+        sql = leaders.agenda_block(c)
+        self.assertIn("INSERT INTO HistoricalAgendas (LeaderType, "
+                      "AgendaType)\nVALUES ('LEADER_TST_LIBERTY', "
+                      "'AGENDA_TST_LIBERTY');", sql)
+        self.assertIn("'TRAIT_AGENDA_TST_LIBERTY', 'KIND_TRAIT'", sql)
+        self.assertEqual(sql.count("INSERT INTO TraitModifiers"), 3)
+        self.assertIn("('AGENDA_TST_LIBERTY_MOD_1', 'InitialValue', "
+                      "'ARGTYPE_IDENTITY', '8')", sql)
+        rows = "\n".join(leaders.text_rows(c))
+        self.assertIn("'LOC_AGENDA_TST_LIBERTY_NAME', 'Queen of the "
+                      "Steppe'", rows)
+        self.assertIn("'LOC_AGENDA_TST_LIBERTY_REACTION_2_REASON', "
+                      "'Distrusts neighbors who rule differently'", rows)
+        # a game agenda and its text are not used then
+        c = self.normalize(own_agenda(), agenda="AGENDA_IRON_CROWN",
+                           agenda_name="Old")
+        self.assertEqual((c["agenda"], c["agenda_name"]),
+                         ("", "Queen of the Steppe"))
+
+    def test_mistakes(self):
+        def fails(own, pattern):
+            with self.assertRaisesRegex(ValueError, pattern):
+                self.normalize(own)
+        fails(dict(own_agenda(), name=" "), "give the agenda .* a name")
+        fails(dict(own_agenda(), reactions=[]), "at least one like")
+        for change, pattern in (({"value": "lots"}, "whole number"),
+                                ({"value": "0"}, "cannot be 0"),
+                                ({"text": ""}, "diplomacy screen"),
+                                ({"reqs": [{"preset": "has_tech",
+                                            "value": "TECH_WRITING"}]},
+                                 "requirement types"),
+                                ({"reqs": [{"type": "plot"}]},
+                                 "REQUIREMENT_")):
+            reaction = dict(own_agenda()["reactions"][0], **change)
+            fails(dict(own_agenda(), reactions=[reaction]),
+                  "Liberty: like / dislike 1 of its agenda - .*" + pattern)
+        # without an agenda of either kind
+        with self.assertRaisesRegex(ValueError, "needs an AI agenda"):
+            self.normalize(None)
+
+    def test_events(self):
+        """A like or dislike of an event is written like the game's own:
+        the event Triggered, the civilization met at all, the opinion
+        fading - and the value a plain number."""
+        culture, _, backstab = own_agenda()["reactions"]
+        self.assertTrue(agendas.is_event(backstab))
+        self.assertFalse(agendas.is_event(culture))
+        effect = agendas.reaction_effect(backstab, "LOC_T", "LOC_R")
+        self.assertEqual(effect["args"], {
+            "InitialValue": "12", "SimpleModifierDescription": "LOC_T",
+            "StatementKey": "LOC_R", "ReductionTurns": "10",
+            "ReductionValue": "-1"})
+        self.assertEqual([(r["type"], r.get("columns"))
+                          for r in effect["reqs"]],
+                         [("REQUIREMENT_CIVILIZATION_LEVEL", None),
+                          ("REQUIREMENT_PLAYER_HAS_MET", None),
+                          ("REQUIREMENT_PLAYER_DECLARED_WAR",
+                           {"Triggered": 1})])
+        sql, _ = modifiers.effects_sql("trait", "TRAIT_AGENDA_X", [effect],
+                                       "X")
+        self.assertIn("(RequirementId, RequirementType, Inverse, Triggered) "
+                      "VALUES ('AGENDA_X_MOD_1_SUBJECT_REQS_3', "
+                      "'REQUIREMENT_PLAYER_DECLARED_WAR', 0, 1)", sql)
+        effect = agendas.reaction_effect(dict(backstab, fade_turns="20"),
+                                         "LOC_T", "LOC_R")
+        self.assertEqual(effect["args"]["ReductionTurns"], "20")
+        # a state: met long enough, no fading
+        effect = agendas.reaction_effect(culture, "LOC_T", "LOC_R")
+        self.assertNotIn("ReductionTurns", effect["args"])
+        self.assertEqual(effect["reqs"][1]["type"],
+                         "REQUIREMENT_PLAYER_MET_X_TURNS_AGO")
+        self.assertNotIn("columns", effect["reqs"][2])
+        for turns in ("0", "soon"):
+            with self.assertRaisesRegex(ValueError, "fades by 1"):
+                agendas.check_reaction(dict(backstab, fade_turns=turns))
+        self.assertEqual(agendas.reaction_summary(backstab),
+                         "+12 when: Declared war (WarType Surprise War), "
+                         "fading by 1 every 10 turns - \"Admires bold "
+                         "strikes\"")
+
+    def test_summary_and_marks(self):
+        culture, neighbors, _ = own_agenda()["reactions"]
+        self.assertEqual(agendas.reaction_summary(culture),
+                         "+8 if: Has more of a yield (MinimumDelta 5, "
+                         "YieldRatio 1.15, YieldType Culture) - \"Admires "
+                         "cultured civilizations\"")
+        self.assertTrue(agendas.reaction_summary(neighbors).startswith(
+            "-6 if: Is a neighbor; not: Has the same government"))
+        self.assertEqual(agendas.reaction_summary(
+            {"value": "3", "reqs": [], "text": "Hi"}),
+            "+3 (every civilization met) - \"Hi\"")
+        spec = leaders.new_leader_spec()
+        self.assertNotIn(("\U0001F3AF", "agenda"),
+                         leaders.leader_custom_marks(spec))
+        spec["own_agenda"] = own_agenda()
+        self.assertIn(("\U0001F3AF", "agenda"),
+                      leaders.leader_custom_marks(spec))
+
+
 @unittest.skipUnless(CACHE and GAME_DIR, "needs the game and its cache")
 class EffectGameDataTest(unittest.TestCase):
     """The game data the advanced effect editor offers and checks."""
@@ -2267,6 +2463,15 @@ class EffectGameDataTest(unittest.TestCase):
             "REQUIREMENT_PLOT_TERRAIN_TYPE_MATCHES")[0][0], "TerrainType")
         self.assertTrue(data.source_items("belief"))
         self.assertTrue(data.type_choices("ability"))
+        # the agenda conditions that are events are the game's
+        db = sqlite3.connect(CACHE)
+        self.addCleanup(db.close)
+        triggered = {t for (t,) in db.execute(
+            "SELECT DISTINCT RequirementType FROM Requirements WHERE "
+            "Triggered = 1 AND RequirementId NOT LIKE '%RFVS%' AND "
+            "RequirementId NOT LIKE '%TST%'")}
+        if gathering_storm_cache():
+            self.assertLessEqual(agendas.EVENT_CONDITIONS, triggered)
         # the arguments of templates are those the game gives their types
         for t in modifiers.TEMPLATES.values():
             mined = {a[0] for a in data.modifier_args(t.modifier_type)}
