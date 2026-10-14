@@ -5,10 +5,12 @@ import re
 
 from .util import asset_path, slug_for_name, sql_str, value_or_column
 from .gamedata import TRAIT_RULE_TABLES
-from .modifiers import effects_sql, summary
+from .modifiers import check_effects, effects_sql, summary
+from .agendas import normalize_own_agenda, own_agenda_sql
 from .civs import STANDARD_DOMAINS
-from .uniques import player_item_sql
+from .uniques import normalize_unique, player_item_sql
 from .moments import normalize_moments
+from .moods import SLOT_KEYS as MOOD_SLOT_KEYS, slot_label as mood_label
 from .art import (DEFAULT_ICON_BORDER_COLOR, DEFAULT_ICON_BORDER_WIDTH,
                   DEFAULT_LOAD_BG,
                   _cached, fitted_portrait, make_circle_icon,
@@ -23,11 +25,13 @@ from .texts import (DIPLO_TEXT, PEDIA_HISTORY, PEDIA_PREFIX, PEDIA_TEXT,
 CUSTOM_MARKS = [
     ("\U0001F5BC", "loading background"),
     ("\U0001F3DB", "diplomacy background"),
+    ("\U0001F3AD", "diplomacy portraits"),
     ("\U0001F3AF", "agenda"),
     ("\U0001F396", "leader ability"),
+    ("⚔", "uniques"),
     ("\U0001F4AC", "diplomacy text"),
     ("\U0001F4D6", "Civilopedia"),
-    ("⭐", "historic moments"),
+    # ("⭐", "historic moments"),
 ]
 
 
@@ -41,10 +45,13 @@ def leader_custom_marks(spec):
         filled(spec.get("load_bg_path")) or bool(spec.get("load_bg_default"))
         or bool(spec.get("load_bg_hue")),
         filled(spec.get("diplo_bg_path")),
+        any(filled(path) for path in (spec.get("mood_images") or {}).values()),
         any(filled(spec.get(k)) for k in ("agenda", "agenda_name",
-                                          "agenda_desc")),
+                                          "agenda_desc"))
+        or bool(spec.get("own_agenda")),
         any(filled(text.get("name")) or filled(text.get("desc"))
             for text in (spec.get("abilities") or {}).values()),
+        bool(spec.get("uniques")),
         any(k in texts for _, lines in DIPLO_TEXT for k, _ in lines),
         any(k in texts for k, _, _, _ in PEDIA_TEXT),
         any(filled(entry.get("path"))
@@ -68,10 +75,14 @@ def leader_custom_marks(spec):
 #   icon_mode ('portrait' or 'file'), icon_crop ((x, y, r) in fitted
 #   portrait pixels, see fit_portrait, or None), icon_border_color,
 #   icon_border_width,
+#   mood_images ({mood slot key: image path}: diplomacy-screen images by
+#   mood or moment, see moods.py; the portrait is the neutral one),
 #   moment_illustrations (older projects only: see moments.py; they now
 #   belong to civilizations),
 #   agenda (AGENDA_ type, "" = the original leader's), agenda_name,
 #   agenda_desc (either one filled = a renamed copy of that agenda),
+#   own_agenda (advanced mode: an agenda of its own instead, {"name",
+#   "desc", "reactions"} - see agendas.py; None or absent: none),
 #   abilities ({TraitType: {"name": ..., "desc": ...}} of the original
 #   leader's ability traits; either one filled = a renamed copy),
 #   city_names ([name, ...], the first is the capital; [] = the
@@ -96,6 +107,7 @@ def new_leader_spec():
         "icon_mode": "portrait", "icon_crop": None,
         "icon_border_color": DEFAULT_ICON_BORDER_COLOR,
         "icon_border_width": DEFAULT_ICON_BORDER_WIDTH,
+        "mood_images": {},
         "moment_illustrations": [],
         "agenda": "", "agenda_name": "", "agenda_desc": "",
         "abilities": {},
@@ -178,6 +190,23 @@ def normalize_spec(spec, data, prefix="", civs=None):
             raise ValueError("{}: {} image not found: {}".format(
                 name, label, path))
         images[key] = path
+    # diplomacy-screen images by mood (the portrait is the neutral one)
+    mood_paths = {}
+    for key, path in (spec.get("mood_images") or {}).items():
+        path = (path or "").strip()
+        if not path:
+            continue
+        if key == "NEUTRAL" or key not in MOOD_SLOT_KEYS:
+            raise ValueError("{}: '{}' is not a diplomacy portrait.".format(
+                name, key))
+        if not os.path.isfile(path):
+            raise ValueError("{}: {} diplomacy portrait not found: {}".format(
+                name, mood_label(key).lower(), path))
+        mood_paths[key] = path
+    if mood_paths and not images["load_fg_path"]:
+        raise ValueError("{}: the diplomacy portraits need a Portrait "
+                         "(General tab) too - it is the neutral one."
+                         .format(name))
     # (older projects: pictures of a game civilization's items; the
     # project's civilizations hold their own)
     moments = normalize_moments(spec.get("moment_illustrations"), name, slug)
@@ -188,6 +217,13 @@ def normalize_spec(spec, data, prefix="", civs=None):
     agenda_name = (spec.get("agenda_name") or "").strip()
     agenda_desc = (spec.get("agenda_desc") or "").strip()
     agenda_type = "AGENDA_" + slug[len("LEADER_"):]
+    own_agenda = None
+    if spec.get("own_agenda"):
+        # (instead of a game agenda or a renamed copy of one)
+        own_agenda = normalize_own_agenda(spec["own_agenda"], name,
+                                          slug[len("LEADER_"):], data)
+        agenda = ""
+        agenda_name, agenda_desc = own_agenda["name"], own_agenda["desc"]
     known = {a["type"]: a for a in data.abilities(orig)}
     abilities = []
     # (without orig there is nothing inherited to rename)
@@ -235,6 +271,18 @@ def normalize_spec(spec, data, prefix="", civs=None):
     # portrait mode without a portrait: keep the inherited icon
     icon_custom = bool(icon_path if icon_mode == "file"
                        else images["load_fg_path"])
+    # one fallback texture per distinct image, named after the first slot
+    # that uses it (each is a full-size texture in the mod)
+    fallback_name = "FALLBACK_NEUTRAL_" + slug[len("LEADER_"):]
+    textures = {os.path.normcase(os.path.abspath(images["load_fg_path"])):
+                fallback_name} if images["load_fg_path"] else {}
+    mood_images = []
+    for key in MOOD_SLOT_KEYS:
+        if key in mood_paths:
+            texture = textures.setdefault(
+                os.path.normcase(os.path.abspath(mood_paths[key])),
+                "FALLBACK_{}_{}".format(key, slug[len("LEADER_"):]))
+            mood_images.append((key, mood_paths[key], texture))
 
     # a new ability of the leader's own, with effects from the editor
     given = spec.get("new_ability") or {}
@@ -245,6 +293,8 @@ def normalize_spec(spec, data, prefix="", civs=None):
             raise ValueError("{}: give the new leader ability a name."
                              .format(name))
         trait = "TRAIT_" + slug
+        check_effects(given.get("effects"), "trait", data,
+                      "{} (leader ability)".format(name))
         sql, texts = effects_sql("trait", trait, given.get("effects") or [],
                                  ability_name, data.type_name)
         new_ability = {
@@ -267,7 +317,7 @@ def normalize_spec(spec, data, prefix="", civs=None):
                 "of its own - give it a name on the Ability tab.".format(
                     name))
         new_ability["replace"] = True       # nothing to add it to
-        if not agenda:
+        if not agenda and not own_agenda:
             raise ValueError("{}: a leader that inherits from nobody needs "
                              "an AI agenda - pick one on the Agenda tab."
                              .format(name))
@@ -283,11 +333,25 @@ def normalize_spec(spec, data, prefix="", civs=None):
         raise ValueError("{}: diplomacy scene '{}' must be a LEADER_ type."
                          .format(name, scene_leader))
 
+    # unique items of its own (as a civilization's, see uniques.py)
+    uniques, seen = [], set()
+    for unique in spec.get("uniques") or []:
+        u = normalize_unique(unique, {"name": name, "slug": slug,
+                                      "owner": "leader"}, data, prefix)
+        if u["slug"] in seen:
+            raise ValueError("{}: two uniques have the type {} - rename "
+                             "one.".format(name, u["slug"]))
+        seen.add(u["slug"])
+        uniques.append(u)
+
     meta = data.meta(orig)
     icon_inherit = (meta.get("icon") or "ICON_{}".format(orig)) if orig \
         else DEFAULT_LEADER_ICON
     return {
         "name": name,
+        # its own unique items (contexts, see uniques.normalize_unique;
+        # written by modbuild after the leaders, whose rows they need)
+        "uniques": uniques,
         "slug": slug,
         # the type is already in the loaded game data - usually an earlier
         # build of this very mod; the caller decides whether that is fine
@@ -344,7 +408,10 @@ def normalize_spec(spec, data, prefix="", civs=None):
         "load_bg": load_bg_name if images["load_bg_path"] else None,
         # 2D diplomacy-screen image (made from the loading portrait),
         # named like the SDK template's FALLBACK_NEUTRAL_JASPERKITTY
-        "fallback_name": "FALLBACK_NEUTRAL_" + slug[len("LEADER_"):],
+        "fallback_name": fallback_name,
+        # ... and the ones it changes to by mood: [(slot, path, texture)]
+        # (a texture may be shared, also with the portrait's)
+        "mood_images": mood_images,
         # diplomacy-screen background (DiplomacyInfo.BackgroundImage)
         "diplo_bg_path": images["diplo_bg_path"],
         "diplo_bg_name": slug + "_DIPLO_BG",
@@ -358,7 +425,10 @@ def normalize_spec(spec, data, prefix="", civs=None):
         "agenda": agenda,
         "agenda_name": agenda_name,
         "agenda_desc": agenda_desc,
-        "agenda_clone": bool(agenda_name or agenda_desc),
+        "agenda_clone": bool(agenda_name or agenda_desc) and not own_agenda,
+        # ... or an agenda of its own (see agendas.normalize_own_agenda;
+        # its name and description are agenda_name / agenda_desc)
+        "own_agenda": own_agenda,
         "agenda_type": agenda_type,
         "agenda_name_tag": "LOC_{}_NAME".format(agenda_type),
         "agenda_desc_tag": "LOC_{}_DESCRIPTION".format(agenda_type),
@@ -405,11 +475,25 @@ def ability_config_column(c, column, key):
 
 
 def config_block(c):
-    """Setup-screen SQL fragment (Players + PlayerItems) for one leader."""
+    """Setup-screen SQL fragment (Players + PlayerItems) for one leader,
+    its own uniques' items last."""
     if c.get("project_civ"):
-        return new_civ_config_block(c)
-    if not c["orig"]:
-        return new_leader_config_block(c)
+        out = new_civ_config_block(c)
+    elif not c["orig"]:
+        out = new_leader_config_block(c)
+    else:
+        out = alt_leader_config_block(c)
+    if c.get("uniques"):
+        out += "\n-- {}'s own unique items\n".format(c["slug"]) + "".join(
+            player_item_sql(u, c["slug"], 200 + 10 * i)
+            for i, u in enumerate(c["uniques"], 1))
+    return out
+
+
+def alt_leader_config_block(c):
+    """Setup-screen rows of a leader inheriting from a leader of a game
+    civilization: its rows with the leader's own name, icon and
+    portrait."""
     return """-----------------------------------------------
 -- Setup-screen rows for {slug} (civ fields and leader ability text
 -- inherited from {orig}; leader name, icon and portrait are new)
@@ -572,6 +656,8 @@ def agenda_block(c):
     source's traits, so its behaviour (modifiers and AI lists, which are
     keyed by trait) is identical; only its name / description differ."""
     slug, orig = c["slug"], c["orig"]
+    if c["own_agenda"]:
+        return own_agenda_sql(slug, c["own_agenda"])
     if not orig:
         return new_agenda_block(c)
     if not c["agenda"] and not c["agenda_clone"]:
@@ -901,6 +987,8 @@ def text_rows(c):
     rows += [row(tag, city) for tag, city in c["city_names"]]
     pairs = [(c["agenda_name_tag"], c["agenda_name"]),
              (c["agenda_desc_tag"], c["agenda_desc"])]
+    if c["own_agenda"]:
+        pairs += c["own_agenda"]["texts"]
     for a in c["abilities"]:
         pairs += [(a["name_tag"], a["name"]), (a["desc_tag"], a["desc"])]
     new = c.get("new_ability")

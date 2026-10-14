@@ -16,12 +16,18 @@ from ..texts import (DIPLO_TEXT, PEDIA_HISTORY, PEDIA_TEXT,
                      texts_to_json)
 from ..modifiers import describe_effects
 from ..leaders import AI_TRAITS, DEFAULT_AI_TRAITS, spec_icon_mode
+from ..references import retarget
+from ..uniques import KINDS
+from ..moods import MOOD_GROUPS, MOOD_SLOTS, resolve_slot
+from ..moods import slot_label as mood_label
 from . import theme
 from .widgets import WRITE_TIP, write_description
 from .widgets import fit_to_screen
 from .widgets import icon_text
 from .widgets import IconCropDialog, ScrollFrame, add_tooltip
 from .modifier_editor import EffectsFrame
+from .agenda_editor import ReactionsFrame
+from .uniques_frame import UniquesFrame, unique_choices
 from .moments_editor import HELP as MOMENTS_HELP, MomentsFrame
 
 LEGACY_MOMENTS_HELP = (
@@ -29,6 +35,15 @@ LEGACY_MOMENTS_HELP = (
     "This leader's civilization is one of the game's, so the pictures it "
     "had in an older project stay here: they still work, and can be "
     "changed or removed.\n\n" + MOMENTS_HELP)
+PORTRAITS_HELP = (
+    "The diplomacy screen shows the leader as a still image (generated "
+    "leaders have no 3D scene): the Portrait from the General tab. Here "
+    "it can change with the leader's mood and with what is happening - "
+    "hover over a name to see when it is shown. An empty slot shows the "
+    "image named next to it. Use pictures with the same size and framing "
+    "as the Portrait (they are fitted the same way), so the leader does "
+    "not jump between them. Each different picture adds about 9 MB to "
+    "the mod.")
 
 
 class LeaderEditor(tk.Toplevel):
@@ -42,6 +57,8 @@ class LeaderEditor(tk.Toplevel):
         super().__init__(app)
         self.app = app
         self.result = None
+        # (the uniques' until their tab is built)
+        self.spec_uniques = spec.get("uniques") or []
         self.title(title)
         self.resizable(False, False)
         self.transient(app)
@@ -56,16 +73,21 @@ class LeaderEditor(tk.Toplevel):
         diplo = ScrollFrame(notebook)
         pedia = ScrollFrame(notebook)
         notebook.add(general, text="General")
+        portraits = ScrollFrame(notebook)
+        notebook.add(portraits, text="Diplomacy portraits")
         ability = ScrollFrame(notebook)
         notebook.add(ability, text="Ability")
         agenda = ScrollFrame(notebook, height=None)
         notebook.add(agenda, text="Agenda")
+        uniques = ScrollFrame(notebook, height=None)
+        notebook.add(uniques, text="Uniques")
         cities = ScrollFrame(notebook, height=None)
         notebook.add(cities, text="City names")
         notebook.add(diplo, text="Diplomacy text")
         notebook.add(pedia, text="Civilopedia")
 
         self._build_general(general.inner, spec)
+        self._build_portraits(portraits.inner, spec)
         self.on_name_changed()          # show the type right away
         texts = spec_texts(spec)
         self.text_widgets = {}          # tag template -> tk.Text
@@ -73,6 +95,7 @@ class LeaderEditor(tk.Toplevel):
         self._build_pedia(pedia.inner, texts)
         self._build_abilities(ability.inner, spec)
         self._build_agenda(agenda.inner, spec)
+        self._build_uniques(uniques.inner, spec)
         self._build_cities(cities.inner, spec)
         # historic moment pictures belong to civilizations now; a leader
         # of a game civilization from an older project keeps its own
@@ -389,6 +412,8 @@ class LeaderEditor(tk.Toplevel):
             self._preview_photos[key] = photo
             self.preview_labels[key].configure(image=photo or "",
                                                text="" if photo else text)
+        if getattr(self, "mood_thumbs", None):  # (built after this tab)
+            self._refresh_mood_thumbs()
 
     def _load_bg_hue(self):
         """The hue shift in degrees (0 while the field is being typed)."""
@@ -396,6 +421,97 @@ class LeaderEditor(tk.Toplevel):
             return max(-180, min(180, int(self.load_bg_hue.get())))
         except (tk.TclError, ValueError):
             return 0
+
+    # thumbnails of the diplomacy portraits (fitted to 800 x 1080)
+    MOOD_THUMB = (48, 64)
+
+    def _build_portraits(self, body, spec):
+        """One image per slot of MOOD_SLOTS; the neutral one is the
+        General tab's portrait."""
+        pad = {"padx": 6, "pady": 2}
+        ttk.Label(body, text=PORTRAITS_HELP, wraplength=820,
+                  justify="left").grid(row=0, column=0, columnspan=6,
+                                       sticky="w", pady=(0, 4))
+        given = spec.get("mood_images") or {}
+        self.mood_vars, self.mood_thumbs, self.mood_notes = {}, {}, {}
+        self._mood_photos = {}
+        row = 1
+        for group, title in MOOD_GROUPS:
+            ttk.Label(body, text=title, font=("TkDefaultFont", 10, "bold")
+                      ).grid(row=row, column=0, columnspan=6, sticky="w",
+                             pady=(10, 2))
+            row += 1
+            for key, slot_group, label, tip, _, _ in MOOD_SLOTS:
+                if slot_group != group:
+                    continue
+                name = ttk.Label(body, text=label + " (?)")
+                name.grid(row=row, column=0, sticky="w", padx=(12, 6),
+                          pady=2)
+                add_tooltip(name, tip)
+                frame = tk.Frame(body, width=self.MOOD_THUMB[0],
+                                 height=self.MOOD_THUMB[1],
+                                 background="#%02x%02x%02x" %
+                                 PREVIEW_BACKDROP[:3])
+                frame.grid(row=row, column=1, **pad)
+                frame.pack_propagate(False)
+                thumb = tk.Label(frame, background=frame["background"])
+                thumb.pack(fill="both", expand=True)
+                self.mood_thumbs[key] = thumb
+                if key == "NEUTRAL":        # set on the General tab
+                    ttk.Entry(body, textvariable=self.load_fg_path, width=50,
+                              state="readonly").grid(row=row, column=2,
+                                                     sticky="w", **pad)
+                else:
+                    var = tk.StringVar(value=given.get(key, ""))
+                    self.mood_vars[key] = var
+                    ttk.Entry(body, textvariable=var, width=50).grid(
+                        row=row, column=2, sticky="w", **pad)
+                    ttk.Button(
+                        body, text="Browse...",
+                        command=lambda v=var, t=label: self.browse_image(
+                            v, t + " diplomacy portrait")).grid(
+                        row=row, column=3, sticky="w", **pad)
+                    ttk.Button(body, text="Clear", width=6,
+                               command=lambda v=var: v.set("")).grid(
+                        row=row, column=4, sticky="w", **pad)
+                    var.trace_add("write",
+                                  lambda *_: self._schedule_previews())
+                note = ttk.Label(body, foreground=theme.hint())
+                note.grid(row=row, column=5, sticky="w", **pad)
+                self.mood_notes[key] = note
+                row += 1
+        self._refresh_mood_thumbs()
+
+    def _refresh_mood_thumbs(self):
+        """Each slot's thumbnail shows what the diplomacy screen would: its
+        own image, or (noted in grey) the one it falls back to."""
+        paths = {key: var.get().strip()
+                 for key, var in self.mood_vars.items()}
+        paths["NEUTRAL"] = self.load_fg_path.get().strip()
+        filled = {key for key, path in paths.items() if path}
+        for key, thumb in self.mood_thumbs.items():
+            shown = resolve_slot(key, filled)
+            if key == "NEUTRAL":
+                note = "the Portrait (General tab)" if paths[key] else \
+                    "no Portrait: set one on the General tab first"
+            else:
+                note = "" if paths[key] else "uses: " + mood_label(shown)
+            photo = None
+            try:
+                from PIL import ImageTk
+                if paths[key] and not os.path.isfile(paths[key]):
+                    note = "(file not found)"
+                img = preview_image(paths[shown], self.MOOD_THUMB,
+                                    portrait=True)
+                if img is not None:
+                    photo = ImageTk.PhotoImage(img)
+            except ImportError:
+                pass                    # no thumbnails without Pillow
+            except Exception as exc:    # unreadable image
+                note = "(cannot preview: {})".format(exc)
+            self._mood_photos[key] = photo
+            thumb.configure(image=photo or "")
+            self.mood_notes[key].configure(text=note)
 
     def _text_field(self, parent, key, label, height, texts, row):
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="nw",
@@ -490,6 +606,8 @@ class LeaderEditor(tk.Toplevel):
     # -- agenda -------------------------------------------------------------
 
     AGENDA_INHERIT = "(inherit from original leader)"
+    # (advanced mode, see agendas.py)
+    AGENDA_OWN = "(an agenda of its own: the likes and dislikes below)"
 
     def _agenda_label(self, agenda):
         """Combobox text for an agenda type: 'Iron Crown (AGENDA_IRON_CROWN)
@@ -510,10 +628,14 @@ class LeaderEditor(tk.Toplevel):
     def _agenda_type(self):
         """Agenda type picked (or typed) in the combobox, "" = inherit."""
         text = self.agenda_var.get().strip()
-        if not text or text == self.AGENDA_INHERIT:
+        if not text or text in (self.AGENDA_INHERIT, self.AGENDA_OWN):
             return ""
         m = re.search(r"\((AGENDA_[A-Z0-9_]+)\)", text)
         return m.group(1) if m else text.upper()
+
+    def _own_agenda(self):
+        """Whether the leader gets an agenda of its own."""
+        return self.agenda_var.get().strip() == self.AGENDA_OWN
 
     def _source_agenda(self):
         """The agenda the leader gets (or copies): picked or inherited."""
@@ -534,12 +656,16 @@ class LeaderEditor(tk.Toplevel):
         ttk.Label(parent, text="Agenda").grid(row=1, column=0, sticky="w",
                                               **pad)
         agenda = (spec.get("agenda") or "").strip()
+        own = spec.get("own_agenda") or None
+        advanced = bool(self.app.advanced_var.get()) \
+            if hasattr(self.app, "advanced_var") else False
         self.agenda_var = tk.StringVar(
-            value=self._agenda_label(agenda) if agenda
-            else self.AGENDA_INHERIT)
+            value=self.AGENDA_OWN if own else self._agenda_label(agenda)
+            if agenda else self.AGENDA_INHERIT)
         combo = ttk.Combobox(
             parent, textvariable=self.agenda_var, width=70,
-            values=[self.AGENDA_INHERIT] + [
+            values=[self.AGENDA_INHERIT] +
+            ([self.AGENDA_OWN] if advanced or own else []) + [
                 self._agenda_label(a) for a in sorted(
                     self.app.data.agendas,
                     key=lambda a: self.app.data.agendas[a]["name"])])
@@ -548,26 +674,47 @@ class LeaderEditor(tk.Toplevel):
                                      foreground=theme.hint())
         self.agenda_info.grid(row=2, column=1, sticky="w", **pad)
 
-        ttk.Label(parent, text="New name").grid(row=3, column=0, sticky="w",
-                                                **pad)
-        self.agenda_name_var = tk.StringVar(value=spec.get("agenda_name", ""))
+        self.agenda_name_label = ttk.Label(parent, text="New name")
+        self.agenda_name_label.grid(row=3, column=0, sticky="w", **pad)
+        self.agenda_name_var = tk.StringVar(
+            value=own["name"] if own else spec.get("agenda_name", ""))
         ttk.Entry(parent, textvariable=self.agenda_name_var, width=40).grid(
             row=3, column=1, sticky="w", **pad)
-        ttk.Label(parent, text="New description").grid(row=4, column=0,
-                                                       sticky="nw", **pad)
+        self.agenda_desc_label = ttk.Label(parent, text="New description")
+        self.agenda_desc_label.grid(row=4, column=0, sticky="nw", **pad)
         box, self.agenda_desc = icon_text(parent, height=4, width=70,
                                           wrap="word", undo=True)
-        self.agenda_desc.insert("1.0", spec.get("agenda_desc", ""))
+        self.agenda_desc.insert("1.0", own.get("desc", "") if own
+                                else spec.get("agenda_desc", ""))
         box.grid(row=4, column=1, sticky="w", **pad)
-        ttk.Button(parent, text="Copy agenda's text into empty fields",
-                   command=self.copy_agenda_text).grid(
-            row=5, column=1, sticky="w", **pad)
+        self.agenda_copy_btn = ttk.Button(
+            parent, text="Copy agenda's text into empty fields",
+            command=self.copy_agenda_text)
+        self.agenda_copy_btn.grid(row=5, column=1, sticky="w", **pad)
+
+        # an agenda of its own: its likes and dislikes (advanced mode)
+        self.reactions_box = ttk.LabelFrame(parent, text="Likes and "
+                                            "dislikes", padding=(8, 4))
+        self.reactions_box.grid(row=6, column=0, columnspan=2, sticky="we",
+                                pady=(12, 0))
+        ttk.Label(self.reactions_box, wraplength=760, justify="left",
+                  foreground=theme.hint(), text=(
+                      "What this leader likes and dislikes in other "
+                      "civilizations, and how much. An empty description "
+                      "lists the likes' and dislikes' texts." if advanced
+                      else "Turn on Advanced mode in the toolbar to edit "
+                      "the likes and dislikes.")).pack(anchor="w",
+                                                       pady=(0, 4))
+        self.reactions = ReactionsFrame(
+            self.reactions_box, self.app, (own or {}).get("reactions"),
+            editable=advanced)
+        self.reactions.pack(anchor="w", fill="x")
 
         # the AI personality of a new leader (one inheriting has the
         # original leader's)
         self.ai_box = ttk.LabelFrame(parent, text="AI personality",
                                      padding=(8, 4))
-        self.ai_box.grid(row=6, column=0, columnspan=2, sticky="we",
+        self.ai_box.grid(row=7, column=0, columnspan=2, sticky="we",
                          pady=(12, 0))
         self.ai_info = ttk.Label(self.ai_box, foreground=theme.hint(),
                                  wraplength=760, justify="left")
@@ -658,7 +805,8 @@ class LeaderEditor(tk.Toplevel):
                   foreground=theme.hint()).grid(row=2, column=1, sticky="w",
                                             padx=6)
         self.new_ability_effects = EffectsFrame(box, self.app, "trait",
-                                                new.get("effects"))
+                                                new.get("effects"),
+                                                self._unique_types)
         self.new_ability_effects.grid(row=3, column=0, columnspan=3,
                                       sticky="we", pady=(6, 0))
         self.new_ability_effects.listbox.configure(height=5)
@@ -844,6 +992,19 @@ class LeaderEditor(tk.Toplevel):
         self.city_text.insert("1.0", "\n".join(names))
 
     def _refresh_agenda_info(self):
+        own = self._own_agenda()
+        self.agenda_name_label.configure(text="Name" if own else "New name")
+        self.agenda_desc_label.configure(text="Description" if own
+                                         else "New description")
+        if own:
+            self.reactions_box.grid()
+            self.agenda_copy_btn.grid_remove()
+            self.agenda_info.configure(text=(
+                "An agenda of this leader's own: give it a name and its "
+                "likes and dislikes."))
+            return
+        self.reactions_box.grid_remove()
+        self.agenda_copy_btn.grid()
         agenda = self._source_agenda()
         info = self.app.data.agendas.get(agenda or "")
         if info:
@@ -879,10 +1040,62 @@ class LeaderEditor(tk.Toplevel):
 
     def _unique_items(self):
         civ, orig = self.civ_var.get().strip(), self._orig()
+        mine = [t for kind in KINDS for t, _ in self._own_unique_types(kind)]
         own = self.app.project_civ_uniques(civ)
         if own is not None:             # one of the project's civilizations
-            return own + self.app.data.leader_unique_items(orig)
-        return self.app.data.uniques_for(civ, orig)
+            return mine + own + self.app.data.leader_unique_items(orig)
+        return mine + self.app.data.uniques_for(civ, orig)
+
+    # -- uniques of its own -------------------------------------------------
+
+    def _build_uniques(self, parent, spec):
+        self.unique_frame = UniquesFrame(
+            parent, self.app, spec.get("uniques"),
+            lambda: self.name_var.get().strip(), (
+                "Unique units, buildings, districts and improvements of "
+                "this leader's own, like the game's leader uniques (Teddy "
+                "Roosevelt's Rough Rider): a player with this leader has "
+                "them on top of the civilization's. Each is a copy of an "
+                "existing one (its 3D art and icons too) with your "
+                "changes, and normally replaces it for this leader."),
+            others=self._civ_unique_types, changed=self._refresh_moment_items,
+            renamed=self._retarget)
+        self.unique_frame.pack(fill="both", expand=True)
+
+    def _own_unique_types(self, kind):
+        frame = getattr(self, "unique_frame", None)
+        if frame is None:               # (still building the tabs)
+            return unique_choices(self.spec_uniques, kind,
+                                  self.app.type_prefix())
+        return frame.own_types(kind)
+
+    def _civ_unique_types(self, kind):
+        """The uniques of the leader's civilization, if one of the
+        project's (a building of the leader's may be built in its
+        district, say)."""
+        civ = self.app.project_civs().get(self.civ_var.get().strip())
+        return unique_choices((civ or {}).get("uniques"), kind,
+                              self.app.type_prefix())
+
+    def _unique_types(self, kind):
+        """The leader's own uniques of a kind and its civilization's, for
+        effect dropdowns."""
+        own = self._own_unique_types(kind)
+        known = {t for t, _ in own}
+        return own + [c for c in self._civ_unique_types(kind)
+                      if c[0] not in known]
+
+    def _retarget(self, mapping):
+        """References to a renamed unique of the leader's (its ability's
+        effects, moment pictures) follow it."""
+        retarget(self.new_ability_effects.items, mapping)
+        self.new_ability_effects.refresh()
+        if self.moments_frame:
+            for row in self.moments_frame.rows:
+                item = row["item"].get().strip().upper()
+                if item in mapping:
+                    row["item"].set(mapping[item])
+        self._refresh_moment_items()
 
     def _refresh_moment_items(self):
         if getattr(self, "moments_frame", None):
@@ -1092,11 +1305,16 @@ class LeaderEditor(tk.Toplevel):
             "icon_crop": tuple(self.icon_crop) if self.icon_crop else None,
             "icon_border_color": tuple(self.icon_border_color),
             "icon_border_width": int(self.icon_border_width),
+            "mood_images": {key: var.get().strip()
+                            for key, var in self.mood_vars.items()
+                            if var.get().strip()},
             "moment_illustrations": self.moments_frame.entries()
             if self.moments_frame else [],
             "agenda": self._agenda_type(),
             "agenda_name": self.agenda_name_var.get().strip(),
             "agenda_desc": self.agenda_desc.get("1.0", "end").strip(),
+            "own_agenda": None,
+            "uniques": self.unique_frame.uniques(),
             "abilities": self.abilities(),
             "city_names": self.city_names(),
             "new_ability": self.new_ability(),
@@ -1109,6 +1327,12 @@ class LeaderEditor(tk.Toplevel):
             "diplo_bg_path": self.diplo_bg_path.get().strip(),
             "diplo_bg_mask": bool(self.diplo_bg_mask.get()),
         }
+        if self._own_agenda():
+            # (its name and description are the agenda's own)
+            spec["own_agenda"] = {"name": spec.pop("agenda_name"),
+                                  "desc": spec.pop("agenda_desc"),
+                                  "reactions": self.reactions.reactions()}
+            spec.update(agenda_name="", agenda_desc="")
         if not spec["name"]:
             messagebox.showwarning("Missing name",
                                    "Please enter the leader's name.",

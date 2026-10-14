@@ -2,14 +2,26 @@
 
 A desktop tool for making Civilization VI mods without writing SQL or XML. It generates:
 
-- **Leaders**: alternate leaders for existing civilizations, or new leaders with their own ability, agenda and AI personality.
+- **Leaders**: alternate leaders for existing civilizations, or new leaders with their own ability, agenda and AI personality, and diplomacy-screen portraits that can change with their mood.
 - **Civilizations**: new civilizations with an ability, city and citizen names, start bias, Civilopedia text, art style and music.
-- **Uniques**: unique units, buildings, districts and improvements, either copied from the game's items and changed, or made from scratch, with their own stats, yields, effects, placement rules and 3D models.
+- **Uniques**: unique units, buildings, districts and improvements, either copied from the game's items and changed, or made from scratch, with their own stats, yields, effects, placement rules and 3D models. They belong to a civilization, or to a single leader (like the game's Rough Rider for Teddy Roosevelt), also a leader of an existing civilization.
 
 The output is a complete mod folder that the game loads like any other mod. It can be published on the Steam Workshop with the SDK's uploader.
 
 ### What it does not do
-Any sort of modding beyond the above mentioned, such as new ressources, great people, yields, governors, beliefs, etc. etc. etc. will still require you to open ModBuddy and write the code yourself.
+Any sort of modding beyond the above mentioned, such as new ressources, great people, yields, governors, beliefs, etc. etc. etc. will still require you to open ModBuddy and write the code yourself. In **Advanced mode** you can add those files of your own to the generated mod (see below).
+
+## Advanced mode
+The **Advanced mode** switch in the toolbar unlocks:
+
+- **Any game modifier as an effect**: besides the effect list, an effect can be any of the game's modifier types, with the arguments the game gives it suggested from its own uses.
+- **Any requirement**: conditions can be any of the game's requirement types, grouped so that *any one* or *all* of them are needed.
+- **Effects attaching effects**: e.g. an ability that gives every city with a Campus an effect of its own.
+- **Import from game...**: copy the effects of any ability, belief, building, district, improvement, unit ability, promotion, governor title or great person.
+- **An agenda of its own**: on a leader's Agenda tab, an AI agenda made of likes and dislikes of other civilizations. Each one is a change in opinion when the other civilization meets your conditions (from the conditions the game's agendas use, or any requirement), with the text the diplomacy screen shows and the reason the AI gives.
+- **Custom files...**: SQL, XML or Lua files of your own, copied into the mod and loaded with the action you choose.
+
+Basic mode keeps to the effect list. Advanced effects already in a project stay in the mod in either mode, but can only be edited in Advanced mode.
 
 ## Acknowledgements
 Many many thanks to [Maconnolly](https://forums.civfanatics.com/members/maconnolly.319458/) for his very thorough mod template and instructions. This was the Rosetta stone for getting into Civ 6 modding for so many of us.
@@ -68,6 +80,6 @@ Most tests generate mods and run their SQL against copies of the game's own data
 ## Limitations
 
 - **3D models** are assembled from the game's existing models and meshes. New models cannot be imported.
-- **Leaders** have no animated 3D scene. The diplomacy screen shows a 2D image made from the loading portrait, or another leader's scene.
-- **Effects** are built from a library of the game's modifier types. Some only exist with the expansions.
+- **Leaders** have no animated 3D scene. The diplomacy screen shows a still image made from the loading portrait, or optionally a different picture for each mood or moment (happy, unhappy, declaring war, ...), in front of the leader's diplomacy background or another leader's scene.
+- **Effects** are built from a library of the game's modifier types, or in Advanced mode from any of them. They are checked against the loaded game data, so they cannot use modifier types, modifiers or requirement sets that only custom files add. Some only exist with the expansions.
 - **DLC items:** a mod that copies an item from a DLC needs that DLC to be enabled.

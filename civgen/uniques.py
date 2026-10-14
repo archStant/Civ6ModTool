@@ -40,7 +40,7 @@ A unique spec is a plain picklable dict:
 import os
 
 from .util import slug_for_name, sql_str
-from .modifiers import effects_sql
+from .modifiers import check_effects, effects_sql
 from .texts import history_paragraphs, loc_text
 from .artdefs import (BUILDINGS_ARTDEF, DISTRICTS_ARTDEF,
                       IMPROVEMENTS_ARTDEF, UNITS_ARTDEF)
@@ -50,6 +50,14 @@ from .landmarks import (new_building_art, new_district_art,
 
 
 KINDS = ("unit", "building", "district", "improvement")
+# Who a unique belongs to: owner kind -> (its trait's prefix, the table
+# giving the owner the trait, its type column). A leader's unique is the
+# game's way too (TRAIT_LEADER_UNIT_AMERICAN_ROUGH_RIDER).
+OWNER_LINKS = {
+    "civilization": ("TRAIT_CIVILIZATION_", "CivilizationTraits",
+                     "CivilizationType"),
+    "leader": ("TRAIT_LEADER_", "LeaderTraits", "LeaderType"),
+}
 KIND_LABELS = {"unit": "Unit", "building": "Building", "district": "District",
                "improvement": "Improvement"}
 
@@ -401,10 +409,12 @@ def new_unique_spec(kind="unit"):
 
 
 def normalize_unique(spec, civ, data, prefix=""):
-    """Validate a unique spec of the civilization context civ and derive
-    its type and tags. Raises ValueError."""
+    """Validate a unique spec of its owner, civ: the context of a
+    civilization, or of a leader ({"name", "slug", "owner": "leader"}, see
+    OWNER_LINKS) - and derive its type and tags. Raises ValueError."""
     kind = spec.get("kind")
     name = (spec.get("name") or "").strip()
+    owner_kind = civ.get("owner", "civilization")
     if kind not in KINDS:
         raise ValueError("{}: unknown unique kind '{}'.".format(
             civ["name"], kind))
@@ -529,11 +539,14 @@ def normalize_unique(spec, civ, data, prefix=""):
     if kind == "district" and not base and not art.get("look_from"):
         raise ValueError("{}: pick the district a new district looks like "
                          "(3D model tab).".format(label))
+    check_effects(spec.get("effects"), kind, data, label)
     # the game item its art definition and icons start from
     model_from = base or art.get("look_from") or replaced
     return {
         "kind": kind, "name": name, "base": base, "slug": slug,
-        "label": label, "civ": civ["slug"], "new": not base,
+        "label": label, "new": not base,
+        # its owner: a civilization's or a leader's (see OWNER_LINKS)
+        "owner": civ["slug"], "owner_kind": owner_kind,
         # what the base item replaces, if it is itself a unique item
         "base_replaces": (base_row or {}).get("replaces"),
         "replaced": replaced,
@@ -555,7 +568,7 @@ def normalize_unique(spec, civ, data, prefix=""):
         # the item whose icons it uses: the unit / building it looks
         # like, else its base item or what it replaces
         "icon_from": art.get("look_from") or model_from,
-        "trait": "TRAIT_CIVILIZATION_" + slug,
+        "trait": OWNER_LINKS[owner_kind][0] + slug,
         "name_tag": "LOC_{}_NAME".format(slug),
         # no description of its own: the base item's (setup screen)
         "desc_tag": "LOC_{}_DESCRIPTION".format(slug)
@@ -626,12 +639,15 @@ def unique_sql(u, name_of):
 INSERT INTO Types (Type, Kind) VALUES ({s}, 'KIND_{k}');
 INSERT INTO Types (Type, Kind) VALUES ({trait}, 'KIND_TRAIT');
 INSERT INTO Traits (TraitType, Name) VALUES ({trait}, {name_tag});
-INSERT INTO CivilizationTraits (CivilizationType, TraitType)
-VALUES ({civ}, {trait});
+INSERT INTO {owners} ({owner_column}, TraitType)
+VALUES ({owner}, {trait});
 """.format(label=u["label"], slug=slug, s=sql_str(slug),
            what="a copy of " + base if base else "a new " + kind,
            k=kind.upper(), trait=sql_str(u["trait"]),
-           name_tag=sql_str(u["name_tag"]), civ=sql_str(u["civ"]))]
+           name_tag=sql_str(u["name_tag"]),
+           owners=OWNER_LINKS[u["owner_kind"]][1],
+           owner_column=OWNER_LINKS[u["owner_kind"]][2],
+           owner=sql_str(u["owner"]))]
     xp2 = []
     if base:
         out.append(clone_rows(table, column, base, slug, updates))

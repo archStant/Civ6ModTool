@@ -5,7 +5,8 @@ import sqlite3
 import xml.etree.ElementTree as ET
 
 from .util import (WORKSHOP_APP_ID, default_out_dir, find_game_dir,
-                   type_display_name, xml_under)
+                   is_number, type_display_name, xml_under)
+from .modifiers import MODIFIER_COLUMNS, REQUIREMENT_COLUMNS
 from .artdefs import CULTURES_ARTDEF, civilization_music, game_element_names
 from .unit_art import art_lists
 from .unit_models import catalogue as unit_parts_catalogue
@@ -27,6 +28,31 @@ TYPE_KINDS = {
                         "PromotionClassType"),
     "great_person": ("GreatPersonClasses", "GreatPersonClassType",
                      "GreatPersonClassType"),
+    "ability": ("UnitAbilities", "UnitAbilityType", "UnitAbilityType"),
+}
+# What in the game has modifiers whose effects the effect editor can
+# copy: source -> (table linking an item to its modifiers, item column,
+# item table, label)
+MODIFIER_SOURCES = {
+    "trait": ("TraitModifiers", "TraitType", "Traits",
+              "Leader and civilization abilities"),
+    "belief": ("BeliefModifiers", "BeliefType", "Beliefs", "Beliefs"),
+    "building": ("BuildingModifiers", "BuildingType", "Buildings",
+                 "Buildings and wonders"),
+    "district": ("DistrictModifiers", "DistrictType", "Districts",
+                 "Districts"),
+    "improvement": ("ImprovementModifiers", "ImprovementType",
+                    "Improvements", "Improvements"),
+    "unit_ability": ("UnitAbilityModifiers", "UnitAbilityType",
+                     "UnitAbilities", "Unit abilities"),
+    "unit_promotion": ("UnitPromotionModifiers", "UnitPromotionType",
+                       "UnitPromotions", "Unit promotions"),
+    "governor_promotion": ("GovernorPromotionModifiers",
+                           "GovernorPromotionType", "GovernorPromotions",
+                           "Governor titles"),
+    "great_person": ("GreatPersonIndividualActionModifiers",
+                     "GreatPersonIndividualType", "GreatPersonIndividuals",
+                     "Great people"),
 }
 # Kinds of unique items: kind -> (table, type column, replaces table)
 ITEM_TABLES = {
@@ -290,6 +316,15 @@ class GameData:
         # building / district meshes: {"building" / "ground": [(mesh,
         # label)]} (see landmarks.mesh_choices)
         self.meshes = {"building": [], "ground": []}
+        # the game's modifier types: {type: {"collection", "effect", "uses"
+        # (how many of the game's modifiers have it), "args": [(name,
+        # uses, an example value, whether always a number)]}}
+        self.modifier_schema = {}
+        # the game's requirement types: {type: {"uses", "args"}}, likewise
+        self.requirement_schema = {}
+        self.modifier_ids = set()           # the game's ModifierIds
+        self.requirement_set_ids = set()    # and RequirementSetIds
+        self._agenda_examples = None        # see agenda_examples
 
     # -- helpers -----------------------------------------------------------
 
@@ -463,6 +498,7 @@ class GameData:
                 "name_tag": name, "desc_tag": desc})
         self._load_types()
         self._load_items()
+        self._load_modifier_schema()
         game_dir = find_game_dir()
         self.cultures = game_element_names(game_dir, CULTURES_ARTDEF,
                                            "Culture")
@@ -536,6 +572,51 @@ class GameData:
             if kind in ITEM_XP2_COLUMNS:
                 self._load_xp2_columns(kind, rows)
             self.items[kind] = rows
+
+    def _load_modifier_schema(self):
+        """The game's modifier and requirement types and the arguments
+        its own modifiers give them (the advanced effect editor's
+        suggestions and checks), and its modifier and requirement set
+        ids."""
+        self.modifier_schema = {
+            t: {"collection": c, "effect": e, "uses": 0, "args": []}
+            for t, c, e in self._query(
+                "SELECT ModifierType, CollectionType, EffectType FROM "
+                "DynamicModifiers")}
+        self.requirement_schema = {t: {"uses": 0, "args": []} for (t,) in
+                                   self._query(
+            "SELECT Type FROM Types WHERE Kind = 'KIND_REQUIREMENT' UNION "
+            "SELECT RequirementType FROM Requirements")}
+        for schema, uses, args in (
+                (self.modifier_schema,
+                 "SELECT ModifierType, COUNT(*) FROM Modifiers GROUP BY 1",
+                 "SELECT m.ModifierType, a.Name, a.Value FROM Modifiers m "
+                 "JOIN ModifierArguments a USING (ModifierId) "
+                 "ORDER BY a.rowid"),
+                (self.requirement_schema,
+                 "SELECT RequirementType, COUNT(*) FROM Requirements "
+                 "GROUP BY 1",
+                 "SELECT r.RequirementType, a.Name, a.Value FROM "
+                 "Requirements r JOIN RequirementArguments a USING "
+                 "(RequirementId) ORDER BY a.rowid")):
+            for t, n in self._query(uses):
+                if t in schema:
+                    schema[t]["uses"] = n
+            found = {}
+            for t, name, value in self._query(args):
+                entry = found.setdefault((t, name), [0, value, True])
+                entry[0] += 1
+                entry[2] = entry[2] and is_number(value)
+            for (t, name), (n, example, numeric) in found.items():
+                if t in schema:
+                    schema[t]["args"].append((name, n, example, numeric))
+            for entry in schema.values():
+                entry["args"].sort(key=lambda a: (-a[1], a[0]))
+        self._agenda_examples = None        # (read when first needed)
+        self.modifier_ids = {m for (m,) in self._query(
+            "SELECT ModifierId FROM Modifiers")}
+        self.requirement_set_ids = {s for (s,) in self._query(
+            "SELECT RequirementSetId FROM RequirementSets")}
 
     def _load_xp2_columns(self, kind, rows):
         """Add an item kind's Gathering Storm-only columns to its rows
@@ -625,11 +706,6 @@ class GameData:
             "one_per_city": bool(row.get("OnePerCity")),
             "outside_territory": bool(row.get("CanBuildOutsideTerritory"))}
 
-    # kind -> (table linking an item to its modifiers, item column)
-    MODIFIER_LINKS = {"building": ("BuildingModifiers", "BuildingType"),
-                      "district": ("DistrictModifiers", "DistrictType"),
-                      "improvement": ("ImprovementModifiers",
-                                      "ImprovementType")}
     # (kind, "yields" / "gpp") -> (table, item column, type column, amount)
     NUMBER_TABLES = {
         ("building", "yields"): ("Building_YieldChanges", "BuildingType",
@@ -654,57 +730,196 @@ class GameData:
                 type_column, amount, table, column), (item,)) if n}
 
     def base_effects(self, kind, item):
-        """The game's modifiers of an item: [{"id", "modifier_type",
-        "args" {name: value}, "run_once", "permanent", "subject_reqs",
-        "owner_reqs" ([] or None if the set cannot be read: [{"type",
-        "args", "inverse"}]), "set_types" {"subject", "owner"}}]."""
-        link = self.MODIFIER_LINKS.get(kind)
-        if not link or not self.conn:
+        """The game's modifiers of a building, district or improvement (a
+        unique's base item; see game_modifiers)."""
+        if kind not in ("building", "district", "improvement"):
             return []
-        table, column = link
+        return self.game_modifiers(kind, item)
+
+    def source_items(self, source):
+        """[(type, English name)] of the items of a MODIFIER_SOURCES kind
+        that have modifiers, by name."""
+        table, column, items, _ = MODIFIER_SOURCES[source]
+        return sorted(((t, self._name(name, t)) for t, name in self._query(
+            'SELECT DISTINCT i.{0}, i.Name FROM "{1}" l JOIN "{2}" i '
+            'ON i.{0} = l.{0}'.format(column, table, items))),
+            key=lambda c: (c[1].lower(), c[0]))
+
+    def game_modifiers(self, source, item):
+        """The game's modifiers of an item of a MODIFIER_SOURCES kind:
+        [{"id", "modifier_type", "args" {name: value}, "run_once",
+        "permanent", "arg_types" {name: {"Type", "Extra", "SecondExtra"}}
+        and "columns" {column: value} (both only where not the default),
+        "strings" {context: text}, "subject_reqs" and "owner_reqs"
+        ([{"type", "args", "inverse", "columns"}]), "set_types"
+        {"subject_reqs" / "owner_reqs": RequirementSetType}}]."""
+        if source not in MODIFIER_SOURCES or not self.conn:
+            return []
+        table, column = MODIFIER_SOURCES[source][:2]
         out = []
         for (mod_id,) in self._query(
                 'SELECT ModifierId FROM "{}" WHERE {} = ? ORDER BY rowid'
                 .format(table, column), (item,)):
-            rows = self._query(
-                "SELECT ModifierType, RunOnce, Permanent, "
-                "SubjectRequirementSetId, OwnerRequirementSetId FROM "
-                "Modifiers WHERE ModifierId = ?", (mod_id,))
-            if not rows:
-                continue
-            mod_type, run_once, permanent, subject, owner = rows[0]
-            effect = {"id": mod_id, "modifier_type": mod_type,
-                      "run_once": bool(run_once),
-                      "permanent": bool(permanent),
-                      "args": dict(self._query(
-                          "SELECT Name, Value FROM ModifierArguments WHERE "
-                          "ModifierId = ?", (mod_id,))),
-                      "set_types": {}}
-            for key, set_id in (("subject_reqs", subject),
-                                ("owner_reqs", owner)):
-                effect[key] = []
-                if not set_id:
-                    continue
-                set_type = self._query(
-                    "SELECT RequirementSetType FROM RequirementSets WHERE "
-                    "RequirementSetId = ?", (set_id,))
-                effect["set_types"][key] = set_type[0][0] if set_type \
-                    else None
-                for (req_id,) in self._query(
-                        "SELECT RequirementId FROM RequirementSetRequirements "
-                        "WHERE RequirementSetId = ?", (set_id,)):
-                    req = self._query(
-                        "SELECT RequirementType, Inverse FROM Requirements "
-                        "WHERE RequirementId = ?", (req_id,))
-                    if not req:
-                        continue
-                    effect[key].append({
-                        "type": req[0][0], "inverse": bool(req[0][1]),
-                        "args": dict(self._query(
-                            "SELECT Name, Value FROM RequirementArguments "
-                            "WHERE RequirementId = ?", (req_id,)))})
-            out.append(effect)
+            mod = self.read_modifier(mod_id)
+            if mod:
+                out.append(mod)
         return out
+
+    def _row(self, sql, args=()):
+        """The first row as {column: value}, or None."""
+        try:
+            cur = self.conn.execute(sql, args)
+        except sqlite3.Error:
+            return None
+        row = cur.fetchone()
+        return dict(zip([d[0] for d in cur.description], row)) if row \
+            else None
+
+    def read_modifier(self, mod_id):
+        """One of the game's modifiers, as game_modifiers gives them, or
+        None."""
+        if not self.conn:
+            return None
+        row = self._row("SELECT * FROM Modifiers WHERE ModifierId = ?",
+                        (mod_id,))
+        if not row:
+            return None
+        mod = {"id": mod_id, "modifier_type": row["ModifierType"],
+               "run_once": bool(row.get("RunOnce")),
+               "permanent": bool(row.get("Permanent")),
+               "args": {}, "arg_types": {}, "strings": {}, "set_types": {},
+               "columns": {c: row[c] for c, default in
+                           MODIFIER_COLUMNS.items()
+                           if row.get(c, default) != default}}
+        for name, value, arg_type, extra, second in self._query(
+                "SELECT Name, Value, Type, Extra, SecondExtra FROM "
+                "ModifierArguments WHERE ModifierId = ? ORDER BY rowid",
+                (mod_id,)):
+            mod["args"][name] = "" if value is None else str(value)
+            if arg_type not in (None, "ARGTYPE_IDENTITY") or \
+                    extra is not None or second is not None:
+                mod["arg_types"][name] = {"Type": arg_type or
+                                          "ARGTYPE_IDENTITY",
+                                          "Extra": extra,
+                                          "SecondExtra": second}
+        mod["strings"] = dict(self._query(
+            "SELECT Context, Text FROM ModifierStrings WHERE ModifierId = ?",
+            (mod_id,)))
+        for key, set_id in (("subject_reqs",
+                             row.get("SubjectRequirementSetId")),
+                            ("owner_reqs", row.get("OwnerRequirementSetId"))):
+            mod[key] = []
+            if not set_id:
+                continue
+            set_type = self._query(
+                "SELECT RequirementSetType FROM RequirementSets WHERE "
+                "RequirementSetId = ?", (set_id,))
+            mod["set_types"][key] = set_type[0][0] if set_type else None
+            for (req_id,) in self._query(
+                    "SELECT RequirementId FROM RequirementSetRequirements "
+                    "WHERE RequirementSetId = ? ORDER BY rowid", (set_id,)):
+                req = self._row("SELECT * FROM Requirements WHERE "
+                                "RequirementId = ?", (req_id,))
+                if not req:
+                    continue
+                mod[key].append({
+                    "type": req["RequirementType"],
+                    "inverse": bool(req.get("Inverse")),
+                    "columns": {c: req[c] for c, default in
+                                REQUIREMENT_COLUMNS.items()
+                                if req.get(c, default) != default},
+                    "args": {n: "" if v is None else str(v)
+                             for n, v in self._query(
+                                 "SELECT Name, Value FROM "
+                                 "RequirementArguments WHERE "
+                                 "RequirementId = ?", (req_id,))}})
+        return mod
+
+    # -- the game's modifier and requirement types (advanced effects) ---
+
+    def modifier_types(self):
+        """The game's modifier types, sorted ([] without the cache)."""
+        return sorted(self.modifier_schema)
+
+    def modifier_info(self, modifier_type):
+        """{"collection", "effect", "uses", "args"} of a modifier type
+        (see modifier_schema), or None."""
+        return self.modifier_schema.get(modifier_type)
+
+    def modifier_args(self, modifier_type):
+        """[(name, uses, example, numeric)] the game's own modifiers of
+        a type give it, the most used first."""
+        return (self.modifier_schema.get(modifier_type) or {}).get(
+            "args") or []
+
+    def requirement_types(self):
+        return sorted(self.requirement_schema)
+
+    def requirement_info(self, requirement_type):
+        """{"uses", "args"} of a requirement type, or None."""
+        return self.requirement_schema.get(requirement_type)
+
+    def requirement_args(self, requirement_type):
+        return (self.requirement_schema.get(requirement_type) or {}).get(
+            "args") or []
+
+    def agenda_examples(self):
+        """How the game's agendas use each condition in their likes and
+        dislikes (see agendas.py): {requirement type: [{"value", "args",
+        "not", "text"}]} ({} without the cache)."""
+        if self._agenda_examples is None and self.conn:
+            from .agendas import SIMPLE_MODIFIER, STANDARD_REQS
+            standard = {r["type"] for r in STANDARD_REQS}
+            found = {}
+            for mod_id, req_id, req_type, inverse in self._query(
+                    "SELECT m.ModifierId, r.RequirementId, "
+                    "r.RequirementType, r.Inverse FROM AgendaTraits a "
+                    "JOIN TraitModifiers t USING (TraitType) JOIN Modifiers "
+                    "m USING (ModifierId) JOIN RequirementSetRequirements s "
+                    "ON s.RequirementSetId = m.SubjectRequirementSetId JOIN "
+                    "Requirements r USING (RequirementId) WHERE "
+                    "m.ModifierType = ? ORDER BY m.rowid",
+                    (SIMPLE_MODIFIER,)):
+                if req_type in standard:
+                    continue
+                args = dict(self._query(
+                    "SELECT Name, Value FROM ModifierArguments WHERE "
+                    "ModifierId = ?", (mod_id,)))
+                tag = args.get("SimpleModifierDescription")
+                found.setdefault(req_type, []).append({
+                    "value": args.get("InitialValue", ""),
+                    "args": dict(self._query(
+                        "SELECT Name, Value FROM RequirementArguments "
+                        "WHERE RequirementId = ?", (req_id,))),
+                    "not": bool(inverse),
+                    "text": (self.loc_text(tag) or self._loc(tag) or "")
+                    if tag else ""})
+            self._agenda_examples = found
+        return self._agenda_examples or {}
+
+    def is_attach(self, modifier_type):
+        """Whether a modifier type attaches another modifier (named by its
+        ModifierId argument)."""
+        info = self.modifier_schema.get(modifier_type)
+        if info:
+            return info["effect"].startswith("EFFECT_ATTACH")
+        return "ATTACH" in modifier_type        # (not known: a guess)
+
+    # (without the cache, anything may be the game's)
+    def has_modifier_type(self, modifier_type):
+        return not self.modifier_schema or \
+            modifier_type in self.modifier_schema
+
+    def has_requirement_type(self, requirement_type):
+        return not self.requirement_schema or \
+            requirement_type in self.requirement_schema
+
+    def has_modifier(self, mod_id):
+        return not self.modifier_ids or mod_id in self.modifier_ids
+
+    def has_requirement_set(self, set_id):
+        return not self.requirement_set_ids or \
+            set_id in self.requirement_set_ids
 
     def leader_unique_items(self, leader):
         """Unique items a leader's own traits unlock (e.g. a leader's

@@ -54,6 +54,15 @@ def type_display_name(type_name):
     return type_name.split("_", 1)[-1].replace("_", " ").title()
 
 
+def is_number(value):
+    """Whether a value (e.g. an argument typed in) reads as a number."""
+    try:
+        float(str(value).strip())
+        return True
+    except ValueError:
+        return False
+
+
 def safe_folder_name(name):
     """Filesystem-safe folder name for a mod pack."""
     base = re.sub(r"[^0-9A-Za-z]+", "_", name or "").strip("_")

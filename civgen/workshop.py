@@ -87,6 +87,22 @@ def plain_text(bbcode):
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
+def _uniques_list(spec):
+    """BBCode lines listing the named uniques of a civilization or leader
+    spec ([] without any)."""
+    uniques = [u for u in spec.get("uniques") or []
+               if (u.get("name") or "").strip()]
+    if not uniques:
+        return []
+    out = ["[list]"]
+    for u in uniques:
+        desc = strip_game_markup(u.get("desc"))
+        out.append("[*][b]{}[/b] (unique {}){}".format(
+            u["name"].strip(), u.get("kind", ""),
+            ": " + desc if desc else ""))
+    return out + ["[/list]"]
+
+
 def generated_description(mod_name, civ_specs, leader_specs,
                           civ_name=lambda spec: spec.get("civ", "")):
     """A Workshop description in Steam BBCode, from the project's specs.
@@ -110,16 +126,7 @@ def generated_description(mod_name, civ_specs, leader_specs,
             out.append("[b]{}[/b]: {}".format(
                 ability["name"].strip(),
                 strip_game_markup(ability.get("desc"))).rstrip(": "))
-        uniques = [u for u in civ.get("uniques") or []
-                   if (u.get("name") or "").strip()]
-        if uniques:
-            out.append("[list]")
-            for u in uniques:
-                desc = strip_game_markup(u.get("desc"))
-                out.append("[*][b]{}[/b] (unique {}){}".format(
-                    u["name"].strip(), u.get("kind", ""),
-                    ": " + desc if desc else ""))
-            out.append("[/list]")
+        out += _uniques_list(civ)
     if leader_specs:
         out.append("")
         out.append("[h2]Leaders[/h2]")
@@ -133,6 +140,7 @@ def generated_description(mod_name, civ_specs, leader_specs,
                 line += ": {}{}".format(ability["name"].strip(),
                                         " - " + desc if desc else "")
             out.append(line)
+            out += _uniques_list(spec)
         out.append("[/list]")
     out.append("")
     out.append("Works with the base game, Rise and Fall and Gathering "
@@ -354,7 +362,8 @@ def _busy_preview(title, civ_specs, leader_specs):
         (c.get("icon_path") or "").strip())][:2]
     unique_pics = _files(*[
         (u.get("portrait_path") or u.get("icon_path") or "").strip()
-        for c in civ_specs for u in c.get("uniques") or []])[:6]
+        for c in list(civ_specs) + list(leader_specs)
+        for u in c.get("uniques") or []])[:6]
     bg_path, hue = _background(leader_specs)
     if not (portraits or moments or civ_icons or unique_pics or
             any((s.get("load_bg_path") or "").strip() for s in leader_specs)):
@@ -429,7 +438,8 @@ def _busy_preview(title, civ_specs, leader_specs):
     if leader_specs:
         adds.append("{} leader{}".format(
             len(leader_specs), "" if len(leader_specs) == 1 else "s"))
-    uniques = sum(len(c.get("uniques") or []) for c in civ_specs)
+    uniques = sum(len(c.get("uniques") or [])
+                  for c in list(civ_specs) + list(leader_specs))
     if uniques:
         adds.append("{} unique{}".format(uniques, "" if uniques == 1
                                          else "s"))

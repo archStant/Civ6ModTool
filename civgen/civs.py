@@ -26,7 +26,7 @@ from .moments import normalize_moments
 from .util import slug_for_name, sql_str, type_display_name
 from .gamedata import TRAIT_RULE_TABLES
 from .art import _cached, placeholder_icon
-from .modifiers import effects_sql
+from .modifiers import check_effects, effects_sql
 from .texts import history_paragraphs, loc_text
 from .uniques import normalize_unique, unique_sql, unique_text_rows
 
@@ -134,6 +134,8 @@ def normalize_civ(spec, data, prefix=""):
         "desc_tag": "LOC_{}_DESCRIPTION".format(trait)
                     if ability_desc or not source else source["desc_tag"],
     }
+    check_effects(ability_ctx["effects"], "trait", data,
+                  "{} (civilization ability)".format(name))
 
     bias = spec.get("start_bias") or {}
     start_bias = {}

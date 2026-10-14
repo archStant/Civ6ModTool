@@ -7,13 +7,13 @@ from tkinter import messagebox, ttk
 
 from ..civs import CITIZEN_GROUPS, CIV_INFO, START_BIAS, civ_slug
 from ..modifiers import describe_effects
-from ..references import retarget, unique_type
-from ..uniques import KINDS, KIND_LABELS, MAIN_TABLES, new_unique_spec
-from ..util import slug_for_name, type_display_name
+from ..references import retarget
+from ..uniques import KINDS
+from ..util import type_display_name
 from . import theme
 from .modifier_editor import EffectsFrame
 from .moments_editor import MomentsFrame
-from .unique_editor import UniqueEditor
+from .uniques_frame import UniquesFrame, unique_choices
 from .widgets import WRITE_TIP, write_description
 from .widgets import fit_to_screen
 from .widgets import icon_text
@@ -31,7 +31,6 @@ class CivEditor(tk.Toplevel):
         super().__init__(app)
         self.app = app
         self.spec = copy.deepcopy(spec)
-        self.uniques = copy.deepcopy(self.spec.get("uniques") or [])
         self.result = None
         self.title(title)
         self.resizable(False, False)
@@ -296,43 +295,16 @@ class CivEditor(tk.Toplevel):
     # -- Uniques -------------------------------------------------------------
 
     def _build_uniques(self, body):
-        ttk.Label(body, wraplength=760, justify="left", text=(
-            "Unique units, buildings and districts. Each is a copy of an "
-            "existing one (its 3D art and icons too) with your changes, and "
-            "normally replaces it for this civilization.")).grid(
-            row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
-        self.unique_tree = ttk.Treeview(body, columns=("kind", "base"),
-                                        show="tree headings", height=10,
-                                        selectmode="browse")
-        self.unique_tree.heading("#0", text="Name")
-        self.unique_tree.column("#0", width=240)
-        self.unique_tree.heading("kind", text="Kind")
-        self.unique_tree.column("kind", width=90)
-        self.unique_tree.heading("base", text="Copy of")
-        self.unique_tree.column("base", width=260)
-        self.unique_tree.grid(row=1, column=0, sticky="nsew")
-        self.unique_tree.bind("<Double-1>", lambda e: self._edit_unique())
-        btns = ttk.Frame(body)
-        btns.grid(row=1, column=1, sticky="n", padx=(8, 0))
-        for kind in KINDS:
-            ttk.Button(btns, text="Add {}...".format(KIND_LABELS[kind].lower()),
-                       command=lambda k=kind: self._add_unique(k)).pack(
-                fill="x", pady=2)
-        ttk.Separator(btns).pack(fill="x", pady=6)
-        for text, cmd in (("Edit...", self._edit_unique),
-                          ("Duplicate", self._duplicate_unique),
-                          ("Remove", self._remove_unique)):
-            ttk.Button(btns, text=text, command=cmd).pack(fill="x", pady=2)
-        self._refresh_uniques()
+        self.unique_frame = UniquesFrame(
+            body, self.app, self.spec.get("uniques"),
+            lambda: self.name_var.get().strip(), (
+                "Unique units, buildings and districts. Each is a copy of an "
+                "existing one (its 3D art and icons too) with your changes, "
+                "and normally replaces it for this civilization."),
+            changed=self._uniques_changed, renamed=self._retarget)
+        self.unique_frame.pack(fill="both", expand=True)
 
-    def _refresh_uniques(self):
-        tree, data = self.unique_tree, self.app.data
-        tree.delete(*tree.get_children())
-        for i, u in enumerate(self.uniques):
-            tree.insert("", "end", iid=str(i), text=u.get("name", ""),
-                        values=(KIND_LABELS.get(u.get("kind"), ""),
-                                data.type_name(u.get("kind"), u["base"])
-                                if u.get("base") else "(new)"))
+    def _uniques_changed(self):
         if getattr(self, "moments_frame", None):
             self.moments_frame.refresh_items()
 
@@ -340,41 +312,9 @@ class CivEditor(tk.Toplevel):
         """The civilization's uniques, for the historic moment pictures."""
         return [t for kind in KINDS for t, _ in self._unique_types(kind)]
 
-    def _unique_dialog(self, spec):
-        editor = UniqueEditor(self, self.app, spec,
-                              self.name_var.get().strip(),
-                              self._unique_types)
-        self.wait_window(editor)
-        self.grab_set()                 # the editor took the grab
-        return editor.result
-
-    def _selected_unique(self):
-        sel = self.unique_tree.selection()
-        return int(sel[0]) if sel else None
-
-    def _add_unique(self, kind):
-        result = self._unique_dialog(new_unique_spec(kind))
-        if result:
-            self.uniques.append(result)
-            self._refresh_uniques()
-
-    def _edit_unique(self):
-        i = self._selected_unique()
-        if i is None:
-            return
-        old = unique_type(self.uniques[i], self.app.type_prefix())
-        result = self._unique_dialog(copy.deepcopy(self.uniques[i]))
-        if result:
-            self.uniques[i] = result
-            new = unique_type(result, self.app.type_prefix())
-            if old and new and old != new:     # renamed
-                self._retarget({old: new})
-            self._refresh_uniques()
-
     def _retarget(self, mapping):
-        """References to a renamed unique (other uniques' districts and
-        effects, the ability's effects, moment pictures) follow it."""
-        retarget(self.uniques, mapping)
+        """References to a renamed unique (the ability's effects, moment
+        pictures) follow it."""
         retarget(self.ability_effects.items, mapping)
         self.ability_effects.refresh()
         for row in self.moments_frame.rows:
@@ -383,29 +323,13 @@ class CivEditor(tk.Toplevel):
                 row["item"].set(mapping[item])
         self.moments_frame.refresh_items()
 
-    def _duplicate_unique(self):
-        i = self._selected_unique()
-        if i is not None:
-            u = copy.deepcopy(self.uniques[i])
-            u["name"] = (u.get("name") or "Unique") + " copy"
-            self.uniques.insert(i + 1, u)
-            self._refresh_uniques()
-
-    def _remove_unique(self):
-        i = self._selected_unique()
-        if i is not None:
-            del self.uniques[i]
-            self._refresh_uniques()
-
     def _unique_types(self, kind):
         """The civilization's own uniques of a kind, for effect dropdowns."""
-        out = []
-        for u in self.uniques:
-            if u.get("kind") == kind and u.get("name"):
-                word = MAIN_TABLES[kind][1][:-len("Type")].upper()
-                out.append((slug_for_name(u["name"], self.app.type_prefix(),
-                                          kind=word), u["name"]))
-        return out
+        frame = getattr(self, "unique_frame", None)
+        if frame is None:               # (still building the tabs)
+            return unique_choices(self.spec.get("uniques"), kind,
+                                  self.app.type_prefix())
+        return frame.own_types(kind)
 
     # -- names ----------------------------------------------------------------
 
@@ -555,7 +479,7 @@ class CivEditor(tk.Toplevel):
                 "desc": self.ability_desc.get("1.0", "end").strip(),
                 "clone": list(self.clones),
                 "effects": self.ability_effects.effects()},
-            "uniques": copy.deepcopy(self.uniques),
+            "uniques": self.unique_frame.uniques(),
             "moment_illustrations": self.moments_frame.entries(),
             "city_names": text_lines(self.city_text),
             "citizen_names": {key: text_lines(text) for key, text in

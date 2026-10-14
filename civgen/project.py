@@ -27,7 +27,8 @@ def json_ready(value):
 
 def save_project(project, path):
     """Write project (a dict of the GUI's state: mod_name, prefix,
-    output_dir, guid, leaders, civs, workshop, ...) to path as JSON.
+    output_dir, guid, leaders, civs, workshop, extra_files, ...) to path
+    as JSON.
     Written to a temporary file first, so a failed save never leaves a
     broken project behind. Raises OSError (or TypeError for a value JSON
     cannot hold)."""
@@ -75,6 +76,14 @@ def load_project(path):
             isinstance(c, dict) and "name" in c for c in project["civs"]):
         raise ValueError("The project contains a malformed civilization "
                          "entry.")
+    # files of the user's own added to the mod (see
+    # modbuild.check_extra_files)
+    project.setdefault("extra_files", [])
+    if not isinstance(project["extra_files"], list) or not all(
+            isinstance(f, dict) and isinstance(f.get("path"), str)
+            for f in project["extra_files"]):
+        raise ValueError("The project contains a malformed custom file "
+                         "entry.")
     for spec in project["leaders"]:     # JSON turned the tuples into lists
         for key in TUPLE_KEYS:
             if isinstance(spec.get(key), list):
@@ -106,13 +115,16 @@ TUPLE_KEYS = ("primary", "secondary", "icon_border_color", "icon_crop")
 
 def _spec_images(spec):
     """(holder, key) of every image path a leader or civilization spec
-    refers to."""
-    if "uniques" in spec:               # a civilization
-        refs = [(spec, "icon_path")] + [(u, key) for u in spec["uniques"]
-                                        for key in ("icon_path",
-                                                    "portrait_path")]
-    else:
+    refers to (their uniques' too)."""
+    if "orig" in spec:                  # a leader
         refs = [(spec, key) for key in IMAGE_KEYS]
+        moods = spec.get("mood_images")
+        if isinstance(moods, dict):     # diplomacy portraits by mood
+            refs += [(moods, slot) for slot in sorted(moods)]
+    else:
+        refs = [(spec, "icon_path")]
+    refs += [(u, key) for u in spec.get("uniques") or []
+             for key in ("icon_path", "portrait_path")]
     refs += [(entry, "path") for entry in spec.get("moment_illustrations")
              or []]
     return refs
@@ -181,6 +193,9 @@ def import_leaders(path):
             civ.setdefault("uniques", [])
         for spec in specs:
             if (not isinstance(spec, dict) or "name" not in spec
+                    or not isinstance(spec.get("uniques", []), list)
+                    or not all(isinstance(u, dict)
+                               for u in spec.get("uniques", []))
                     or not all(isinstance(entry, dict) for entry in
                                spec.get("moment_illustrations") or [])):
                 raise ValueError("The export contains a malformed leader "

@@ -22,7 +22,8 @@ from ..leaders import (CUSTOM_MARKS, leader_custom_marks, leader_icon_preview,
 from ..civs import (CIV_BADGE_COLOR, civ_icon_preview, civ_slug,
                     new_civ_spec)
 from ..uniques import KINDS, MAIN_TABLES
-from ..modbuild import prepare_project, write_mod
+from ..modbuild import (all_uniques, check_extra_files, prepare_project,
+                        write_mod)
 from ..moments import move_to_civs as move_moments_to_civs
 from ..workshop import (UPLOADER_EXE, build_stamp, find_uploader,
                         new_workshop_spec, normalize_workshop, plain_text,
@@ -61,6 +62,7 @@ class GeneratorApp(tk.Tk):
         self._saved_state = None
 
         self._build_widgets()
+        self.on_advanced_mode(save=False)
         # right-click in any text field: insert a game icon
         install_icon_context_menu(self)
         self._refresh_lists()
@@ -98,6 +100,8 @@ class GeneratorApp(tk.Tk):
             "civs": [],
             # Steam Workshop details (see workshop.py)
             "workshop": new_workshop_spec(),
+            # files of the user's own (see modbuild.check_extra_files)
+            "extra_files": [],
         }
 
     def type_prefix(self):
@@ -183,6 +187,33 @@ class GeneratorApp(tk.Tk):
         theme.apply(dark)
         theme.save_setting("dark_mode", dark)
 
+    def on_advanced_mode(self, save=True):
+        """The toolbar's Advanced mode switch: remember it (the editors
+        read it when they open) and show the Custom files button."""
+        advanced = bool(self.advanced_var.get())
+        if save:
+            theme.save_setting("advanced_mode", advanced)
+        if advanced:
+            self.custom_btn.pack(side="left", padx=1, after=self.export_btn)
+        else:
+            self.custom_btn.pack_forget()
+        self._refresh_custom_note()
+
+    def _refresh_custom_note(self):
+        """The status bar's note of the project's custom files."""
+        count = len(self.project.get("extra_files") or [])
+        self.custom_label.configure(text="{} custom file{}".format(
+            count, "" if count == 1 else "s") if count else "")
+
+    def on_custom_files(self):
+        from .custom_files import CustomFilesDialog
+        dialog = CustomFilesDialog(self, self.project.get("extra_files"))
+        self.wait_window(dialog)
+        if dialog.result is not None:
+            self.project["extra_files"] = dialog.result
+            self._refresh_custom_note()
+            self._update_save_button()
+
     def _build_widgets(self):
         pad = {"padx": 6, "pady": 3}
 
@@ -215,9 +246,15 @@ class GeneratorApp(tk.Tk):
         tool("Import...", self.on_import_leaders,
              "Add the leaders (and civilizations) of an export to this "
              "project")
-        tool("Export...", self.on_export_leaders,
-             "Export the selected leaders (and their civilizations), with "
-             "their images, to share or move them")
+        self.export_btn = tool(
+            "Export...", self.on_export_leaders,
+            "Export the selected leaders (and their civilizations), with "
+            "their images, to share or move them")
+        # (advanced mode only, see on_advanced_mode)
+        self.custom_btn = tool(
+            "Custom files...", self.on_custom_files,
+            "Add files of your own - SQL, XML, Lua... - to the mod, for "
+            "what the editors cannot make")
         self.generate_btn = ttk.Button(toolbar, text="Generate mod",
                                        style="Generate.TButton",
                                        command=self.on_generate)
@@ -240,6 +277,20 @@ class GeneratorApp(tk.Tk):
         dark.pack(side="right", padx=1)
         add_tooltip(dark, "Switch between light and dark colors (remembered "
                     "for next time)")
+        self.advanced_var = tk.BooleanVar(
+            value=bool(theme.load_settings().get("advanced_mode")))
+        advanced = ttk.Checkbutton(toolbar, text="Advanced mode",
+                                   variable=self.advanced_var,
+                                   style="Toolbutton",
+                                   command=self.on_advanced_mode)
+        advanced.pack(side="right", padx=1)
+        add_tooltip(advanced, (
+            "Advanced mode: effects can be any of the game's modifiers, "
+            "with any of its requirements (and 'any of' groups of them), "
+            "and can be copied from anything in the game - abilities, "
+            "beliefs, promotions, great people...\n\nBasic mode keeps to "
+            "the effect list. Advanced effects made before stay in the "
+            "mod either way. Remembered for next time."))
         ttk.Separator(self, orient="horizontal").pack(side="top", fill="x")
 
         # -- status bar: project file and game data
@@ -250,6 +301,10 @@ class GeneratorApp(tk.Tk):
         self.project_label = ttk.Label(status, text="(unsaved)",
                                        style="Status.TLabel")
         self.project_label.pack(side="left")
+        self.custom_label = ttk.Label(status, style="Status.TLabel")
+        self.custom_label.pack(side="left")
+        add_tooltip(self.custom_label, "Files of your own the mod gets as "
+                    "they are (Custom files... in Advanced mode)")
         # without the game's own data: a warning, which loads it on click
         self.data_warning = ttk.Label(status, text=" ! ",
                                       style="Warning.TLabel",
@@ -440,7 +495,8 @@ class GeneratorApp(tk.Tk):
             self.mod_name_var.get().strip() or "New mod",
             self.type_prefix(), self.out_var.get().strip(),
             self.project["leaders"], self.project["civs"],
-            self.project.get("workshop")])
+            self.project.get("workshop"),
+            self.project.get("extra_files") or []])
 
     def _mark_saved(self):
         """The current state is what is on disk (or a fresh project)."""
@@ -514,6 +570,8 @@ class GeneratorApp(tk.Tk):
     def _refresh_lists(self):
         self._refresh_leader_list()
         self._refresh_civ_list()
+        if hasattr(self, "custom_label"):
+            self._refresh_custom_note()
 
     def _refresh_civ_list(self):
         tree = self.civ_tree
@@ -609,7 +667,7 @@ class GeneratorApp(tk.Tk):
             messagebox.showinfo("No selection",
                                 "Select a leader in the list first.")
             return
-        spec = dict(self.project["leaders"][i])
+        spec = copy.deepcopy(self.project["leaders"][i])
         spec["name"] = (spec.get("name") or "Leader") + " copy"
         self.project["leaders"].insert(i + 1, spec)
         self._refresh_leader_list()
@@ -967,14 +1025,15 @@ class GeneratorApp(tk.Tk):
     # -- generation -----------------------------------------------------------------
 
     def _prefix_changed(self):
-        """Point references to the civilizations' uniques (moment
-        pictures, districts, effects) at their types with the new
-        prefix."""
+        """Point references to the uniques (the civilizations' and the
+        leaders': moment pictures, districts, effects) at their types with
+        the new prefix."""
         new = self.type_prefix()
         old, self._last_prefix = getattr(self, "_last_prefix", new), new
         if old == new:
             return
-        mapping = prefix_change(self.project["civs"], old, new)
+        mapping = prefix_change(self.project["civs"], old, new,
+                                self.project["leaders"])
         if mapping:
             retarget(self.project["civs"], mapping)
             retarget(self.project["leaders"], mapping)
@@ -1008,6 +1067,9 @@ class GeneratorApp(tk.Tk):
         civs, ctxs, errors = prepare_project(
             self.project["leaders"], self.project["civs"], self.data,
             self.type_prefix())
+        extra_files, file_errors = check_extra_files(
+            self.project.get("extra_files"))
+        errors += file_errors
         if errors:
             messagebox.showwarning("Problems found",
                                    "\n\n".join(errors))
@@ -1044,9 +1106,9 @@ class GeneratorApp(tk.Tk):
         self.project["guid"] = guid
 
         # may ask for the cooker - dialogs must happen before the worker
-        wants_art = any(needs_art(c) for c in ctxs) or any(
-            cc["icon_custom"] or any(u["icon_custom"] for u in cc["uniques"])
-            for cc in civs)
+        wants_art = any(needs_art(c) for c in ctxs) or \
+            any(cc["icon_custom"] for cc in civs) or \
+            any(u["icon_custom"] for u in all_uniques(civs, ctxs))
         cooker = self._cooker_path() if wants_art else None
 
         # 3) convert, cook and write in a thread behind a progress window
@@ -1058,7 +1120,7 @@ class GeneratorApp(tk.Tk):
                 busy.set_status, civs, self.data.type_name,
                 {"version": publish["version"], "author": publish["author"],
                  "description": plain_text(publish["description"])},
-                stamp))
+                stamp, extra_files))
         except OSError as exc:
             messagebox.showerror("Could not write mod", str(exc))
             return False
@@ -1107,10 +1169,15 @@ class GeneratorApp(tk.Tk):
     def build_stamp(self):
         """A hash of everything the generated mod is made from."""
         publish = self.publish_values()
+        # (a custom file changed since is as new as an edited leader)
+        custom = [dict(f, mtime=os.path.getmtime(f["path"])
+                       if os.path.isfile(f.get("path") or "") else None)
+                  for f in self.project.get("extra_files") or []]
         return build_stamp(self._project_state()[:2],
                            self.project["leaders"], self.project["civs"],
                            publish["version"], publish["author"],
-                           publish["description"])
+                           publish["description"], *([custom] if custom
+                                                     else []))
 
     def uploader_path(self, ask=True):
         """The SDK's Workshop uploader: remembered, found, or asked for."""
