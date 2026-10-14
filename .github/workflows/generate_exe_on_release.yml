@@ -34,6 +34,10 @@ jobs:
             --include-data-dir=assets=assets `
             --windows-console-mode=disable --windows-icon-from-ico=app.ico `
             --assume-yes-for-downloads `
+            --product-name="Civ6ModGenerator" `
+            --file-version=1.0 `
+            --product-version=1.0 `
+            --file-description="A GUI tool for generating Civ 6 mods" `
             --output-dir=dist `
             --output-filename=Civ6ModGenerator.exe `
             main.py
