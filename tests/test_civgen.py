@@ -94,6 +94,19 @@ def designed_models():
              "parts": mounted}]
 
 
+def attaching_effect():
+    """A raw effect attaching an effect of its own to the player's cities
+    with a Campus or a Library (an 'any of' group)."""
+    effect = modifiers.new_raw_effect(
+        "MODIFIER_PLAYER_CITIES_ATTACH_MODIFIER")
+    effect["attached"] = modifiers.new_effect("this_city_yield_pct")
+    effect["reqs"] = [{"group": "ANY", "target": "subject", "reqs": [
+        {"preset": "city_district", "value": "DISTRICT_CAMPUS"},
+        {"type": "REQUIREMENT_CITY_HAS_BUILDING",
+         "args": {"BuildingType": "BUILDING_LIBRARY"}}]}]
+    return effect
+
+
 def sample_project():
     """(leader specs, civ specs) using every feature that needs no art."""
     alt = leaders.new_leader_spec()
@@ -109,6 +122,12 @@ def sample_project():
     civ["start_bias"].update(feature={"FEATURE_JUNGLE": 2}, river=3)
     civ["pedia"].update(history="First.\n\nSecond.", location="Pontus")
     yields = modifiers.new_effect("city_yield")
+    # (advanced: met by either requirement, one of them a raw one)
+    yields["reqs"] = [{"preset": "city_district", "value": "DISTRICT_CAMPUS"},
+                      {"type": "REQUIREMENT_CITY_HAS_BUILDING",
+                       "args": {"BuildingType": "BUILDING_LIBRARY"},
+                       "target": "subject"}]
+    yields["set_types"] = {"subject": "ANY"}
     combat = modifiers.new_effect("combat_strength")
     combat["reqs"] = [{"preset": "unit_class",
                        "value": "PROMOTION_CLASS_MELEE"},
@@ -121,7 +140,8 @@ def sample_project():
                           "not": True}]
     civ["ability"].update(name="Daughters of Ares", desc="Strong.",
                           clone=["TRAIT_CIVILIZATION_FIRST_CIVILIZATION"],
-                          effects=[yields, combat, adjacency])
+                          effects=[yields, combat, adjacency,
+                                   attaching_effect()])
     unit = uniques.new_unique_spec("unit")
     unit.update(base="UNIT_SWORDSMAN", name="Amazon Warrior",
                 stats={"Combat": "40", "BaseMoves": "3",
@@ -129,7 +149,12 @@ def sample_project():
                        "ResourceMaintenanceType": "RESOURCE_HORSES",
                        "ResourceMaintenanceAmount": "1"},
                 effects=[modifiers.new_effect("movement"),
-                         modifiers.new_effect("combat_strength")],
+                         modifiers.new_effect("combat_strength"),
+                         dict(modifiers.new_raw_effect(
+                             "MODIFIER_UNIT_ADJUST_COMBAT_STRENGTH",
+                             {"Amount": "3"}),
+                             reqs=[{"type": "REQUIREMENT_PLOT_IS_HILLS",
+                                    "target": "subject"}])],
                 art={"look_from": "UNIT_ROMAN_LEGION",
                      "members": [{"type": "RomanLegion", "count": 3,
                                   "scale": 1.1},
@@ -184,7 +209,14 @@ def sample_project():
     lodge.update(name="Hunting Lodge", base="IMPROVEMENT_CHATEAU",
                  stats={"Housing": "1", "PrereqCivic": "None"},
                  yields={"YIELD_FOOD": "1", "YIELD_FAITH": "2"},
-                 adjacencies=False)
+                 adjacencies=False,
+                 # (advanced, with what a copied game modifier keeps)
+                 effects=[dict(modifiers.new_raw_effect(
+                     "MODIFIER_PLAYER_GRANT_YIELD",
+                     {"Amount": "50", "YieldType": "YIELD_GOLD"}),
+                     run_once=True, permanent=True,
+                     arg_types={"Amount": {"Type": "ScaleByGameSpeed"}},
+                     columns={"Repeatable": 1})])
     grove = uniques.new_unique_spec("improvement")
     grove.update(name="Sacred Grove", base="",
                  art={"look_from": "IMPROVEMENT_PAIRIDAEZA"},
@@ -234,10 +266,25 @@ class GeneratedModTest(unittest.TestCase):
         cls.civs, cls.ctxs, errors = modbuild.prepare_project(
             leader_specs, civ_specs, game_data(), "TST")
         assert not errors, errors
+        # custom files (advanced mode): a SQL file, and a script for
+        # Gathering Storm only
+        custom = []
+        for name, text, entry in (
+                ("Custom.sql", "UPDATE Units SET Cost = 1 WHERE UnitType = "
+                 "'UNIT_TST_AMAZON_WARRIOR';\n", {}),
+                ("Extra.lua", "print('hello')\n",
+                 {"criteria": "Expansion2AndBeyond"})):
+            path = os.path.join(cls.tmp, name)
+            with open(path, "w") as fh:
+                fh.write(text)
+            custom.append(dict(modbuild.new_custom_file(path), **entry))
+        extra_files, errors = modbuild.check_extra_files(custom)
+        assert not errors, errors
         cls.report = []
         modbuild.write_mod("Test Mod", cls.ctxs, "TestMod", cls.mod_dir,
                            "guid", None, cls.report, lambda text: None,
-                           cls.civs, game_data().type_name)
+                           cls.civs, game_data().type_name,
+                           extra_files=extra_files)
 
     @classmethod
     def tearDownClass(cls):
@@ -385,6 +432,110 @@ class GeneratedModTest(unittest.TestCase):
                          [("LEADER_T_ROOSEVELT",)])
         self.assertEqual(q("SELECT * FROM AltLeaderScenes WHERE LeaderType "
                            "= 'LEADER_TST_ANTIOPE'"), [])
+
+    def test_advanced_effects(self):
+        """Raw effects, attached effects and 'any of' requirements: rows
+        that refer to each other by value (no foreign keys check them)."""
+        db = database("DebugGameplay.sqlite", self.tmp)
+        self.addCleanup(db.close)
+        db.executescript(read(self.mod_dir, "Gameplay/NewLeader_Gameplay.sql"))
+        self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
+        q = lambda sql: db.execute(sql).fetchall()    # noqa: E731
+        self.assertEqual(q("SELECT ModifierId, ModifierType FROM Modifiers "
+                           "WHERE ModifierId LIKE '%TST%' AND ModifierType "
+                           "NOT IN (SELECT ModifierType FROM "
+                           "DynamicModifiers)"), [])
+        # the attaching effect and the effect it attaches
+        attach = "CIVILIZATION_TST_AMAZONS_MOD_4"
+        self.assertEqual(q("SELECT Value FROM ModifierArguments WHERE "
+                           "ModifierId = '{}' AND Name = 'ModifierId'"
+                           .format(attach)), [(attach + "_ATTACHED",)])
+        self.assertEqual(q("SELECT ModifierType FROM Modifiers WHERE "
+                           "ModifierId = '{}_ATTACHED'".format(attach)),
+                         [("MODIFIER_SINGLE_CITY_ADJUST_CITY_YIELD_MODIFIER",)])
+        self.assertEqual(q("SELECT * FROM TraitModifiers WHERE ModifierId = "
+                           "'{}_ATTACHED'".format(attach)), [])
+        self.assertEqual(q("SELECT a.Value FROM ModifierArguments a JOIN "
+                           "Modifiers m USING (ModifierId) WHERE a.Name = "
+                           "'ModifierId' AND m.ModifierId LIKE '%TST%' AND "
+                           "a.Value NOT IN (SELECT ModifierId FROM "
+                           "Modifiers)"), [])
+        # its 'any of' group: a set of its own, met when the group is
+        nested = q("SELECT Value FROM RequirementArguments WHERE Name = "
+                   "'RequirementSetId' AND RequirementId LIKE '%TST%'")
+        self.assertEqual(nested, [(attach + "_SUBJECT_REQS_1_SET",)])
+        self.assertEqual(q("SELECT RequirementSetType FROM RequirementSets "
+                           "WHERE RequirementSetId = '{}'".format(
+                               nested[0][0])),
+                         [("REQUIREMENTSET_TEST_ANY",)])
+        self.assertEqual(len(q("SELECT * FROM RequirementSetRequirements "
+                               "WHERE RequirementSetId = '{}'".format(
+                                   nested[0][0]))), 2)
+        # a template effect met by either of its requirements
+        self.assertEqual(q("SELECT RequirementSetType FROM RequirementSets "
+                           "WHERE RequirementSetId = "
+                           "'CIVILIZATION_TST_AMAZONS_MOD_1_SUBJECT_REQS'"),
+                         [("REQUIREMENTSET_TEST_ANY",)])
+        # links without a foreign key
+        for table, column in (("BuildingModifiers", "BuildingType"),
+                              ("ImprovementModifiers", "ImprovementType")):
+            self.assertEqual(q("SELECT ModifierId FROM {} WHERE {} LIKE "
+                               "'%TST%' AND ModifierId NOT IN (SELECT "
+                               "ModifierId FROM Modifiers)".format(
+                                   table, column)), [])
+        # what a copied game modifier keeps
+        self.assertEqual(q("SELECT RunOnce, Permanent, Repeatable FROM "
+                           "Modifiers WHERE ModifierId = "
+                           "'TST_HUNTING_LODGE_MOD_1'"), [(1, 1, 1)])
+        self.assertEqual(q("SELECT Name, Type FROM ModifierArguments WHERE "
+                           "ModifierId = 'TST_HUNTING_LODGE_MOD_1' ORDER BY "
+                           "1"), [("Amount", "ScaleByGameSpeed"),
+                                  ("YieldType", "ARGTYPE_IDENTITY")])
+        # the unique unit's raw effect: on its ability, with a preview
+        self.assertEqual(q("SELECT UnitAbilityType FROM UnitAbilityModifiers "
+                           "WHERE ModifierId = 'TST_AMAZON_WARRIOR_MOD_3'"),
+                         [("ABILITY_TST_AMAZON_WARRIOR",)])
+        self.assertEqual(len(q("SELECT * FROM ModifierStrings WHERE "
+                               "ModifierId = 'TST_AMAZON_WARRIOR_MOD_3'")), 1)
+
+    def test_custom_files(self):
+        """Custom files are copied as they are and loaded by their
+        actions, after the generated files."""
+        self.assertEqual(read(self.mod_dir, "Custom/Custom.sql"),
+                         "UPDATE Units SET Cost = 1 WHERE UnitType = "
+                         "'UNIT_TST_AMAZON_WARRIOR';\n")
+        root = ET.fromstring(read(self.mod_dir, "TestMod.modinfo"))
+        files = [f.text for f in root.find("Files")]
+        self.assertIn("Custom/Custom.sql", files)
+        self.assertIn("Custom/Extra.lua", files)
+        actions = {a.get("id"): a for a in root.find("InGameActions")}
+        self.assertEqual(len(actions), len(root.find("InGameActions")))
+        sql, = [a for a in actions.values()
+                if [f.text for f in a.findall("File")] ==
+                ["Custom/Custom.sql"]]
+        self.assertEqual((sql.tag, sql.find("Properties/LoadOrder").text),
+                         ("UpdateDatabase", "1100"))
+        lua, = [a for a in actions.values()
+                if a.tag == "AddGameplayScripts"]
+        self.assertEqual(lua.find("Criteria").text, "Expansion2AndBeyond")
+        # each criterion is defined once
+        ids = [c.get("id") for c in root.find("ActionCriteria")]
+        self.assertEqual(sorted(ids), sorted(set(ids)))
+        self.assertIn("Expansion2AndBeyond", ids)
+        # (the generated SQL first, then the custom file's)
+        db = database("DebugGameplay.sqlite", self.tmp)
+        self.addCleanup(db.close)
+        db.executescript(read(self.mod_dir, "Gameplay/NewLeader_Gameplay.sql")
+                         + read(self.mod_dir, "Custom/Custom.sql"))
+        self.assertEqual(db.execute(
+            "SELECT Cost FROM Units WHERE UnitType = "
+            "'UNIT_TST_AMAZON_WARRIOR'").fetchall(), [(1,)])
+        # what the Workshop uploader checks
+        from civgen import workshop
+        results = dict((message, ok) for ok, message in workshop.check_mod(
+            self.mod_dir, {"title": "T", "description": "D"}))
+        self.assertTrue(results["All files the mod lists exist"])
+        self.assertTrue(results["No archives or programs in the mod folder"])
 
     def test_config_sql_runs(self):
         db = database("DebugConfiguration.sqlite", self.tmp)
@@ -989,6 +1140,70 @@ class LeaderOnlyTest(unittest.TestCase):
         self.assertIn("<ActionCriteria/>", modinfo)
         self.assertNotIn(modbuild.ICONS_SQL_FILE, modinfo)
 
+    def test_custom_files_checked(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        paths = {}
+        for name in ("Rules.sql", "Script.lua", "Tool.exe"):
+            paths[name] = os.path.join(tmp, name)
+            open(paths[name], "w").close()
+        os.makedirs(os.path.join(tmp, "other"))
+        paths["again"] = os.path.join(tmp, "other", "Rules.sql")
+        open(paths["again"], "w").close()
+        new = modbuild.new_custom_file
+        self.assertEqual(new(paths["Script.lua"])["action"],
+                         "AddGameplayScripts")
+        files, errors = modbuild.check_extra_files([new(paths["Rules.sql"])])
+        self.assertEqual((files[0]["name"], errors),
+                         ("Custom/Rules.sql", []))
+
+        def error(entry, pattern):
+            _, errors = modbuild.check_extra_files(
+                [entry] if isinstance(entry, dict) else entry)
+            self.assertRegex("\n".join(errors), pattern)
+        error(new(os.path.join(tmp, "missing.sql")), "not found")
+        error(new(""), "no file chosen")
+        error(new(paths["Tool.exe"]), "Steam Workshop")
+        error(dict(new(paths["Rules.sql"]), action="UpdateArt"),
+              "unknown action")
+        error(dict(new(paths["Script.lua"]), scope="FrontEnd"),
+              "only works in a game")
+        error(dict(new(paths["Rules.sql"]), criteria="Someday"),
+              "unknown criteria")
+        error(dict(new(paths["Rules.sql"]), load_order="soon"),
+              "whole number")
+        error([new(paths["Rules.sql"]), new(paths["again"])],
+              "two custom files")
+
+    def test_modinfo_custom_actions(self):
+        custom = [{"name": "Custom/A.sql", "action": "UpdateDatabase",
+                   "scope": "InGame", "load_order": 1100, "criteria": ""},
+                  {"name": "Custom/B.sql", "action": "UpdateDatabase",
+                   "scope": "InGame", "load_order": 1100, "criteria": ""},
+                  {"name": "Custom/UI.xml", "action": "AddUserInterfaces",
+                   "scope": "InGame", "load_order": 1100,
+                   "criteria": "Expansion1AndBeyond"},
+                  {"name": "Custom/Setup.sql", "action": "UpdateDatabase",
+                   "scope": "FrontEnd", "load_order": 50, "criteria": ""}]
+        root = ET.fromstring(modbuild.build_modinfo(
+            "M", "d", "g", False, None, ["a"] + [f["name"] for f in custom],
+            True, custom=custom))
+        ingame = {a.get("id"): a for a in root.find("InGameActions")}
+        both = ingame["InGameCustom2"]
+        self.assertEqual([f.text for f in both.findall("File")],
+                         ["Custom/A.sql", "Custom/B.sql"])
+        ui = ingame["InGameCustom1"]
+        self.assertEqual((ui.tag, ui.find("Properties/Context").text,
+                          ui.find("Criteria").text),
+                         ("AddUserInterfaces", "InGame",
+                          "Expansion1AndBeyond"))
+        front, = [a for a in root.find("FrontEndActions")
+                  if a.get("id") == "FrontEndCustom1"]
+        self.assertEqual(front.find("Properties/LoadOrder").text, "50")
+        # (moments use the same criterion: defined once)
+        self.assertEqual([c.get("id") for c in root.find("ActionCriteria")],
+                         ["Expansion1AndBeyond"])
+
     def test_effect_summary_and_check(self):
         effect = modifiers.new_effect("city_yield")
         effect["reqs"] = [{"preset": "city_district",
@@ -1589,7 +1804,9 @@ class ProjectFileTest(unittest.TestCase):
         self.project = {"mod_name": "Amazons", "prefix": "TST",
                         "output_dir": "C:/out", "guid": str(uuid.uuid4()),
                         "leaders": leaders, "civs": civs,
-                        "workshop": {"version": 2}}
+                        "workshop": {"version": 2},
+                        "extra_files": [modbuild.new_custom_file(
+                            "C:/mine/Rules.sql")]}
 
     def test_round_trip(self):
         path = os.path.join(self.tmp, "a" + project.PROJECT_EXT)
@@ -1609,11 +1826,13 @@ class ProjectFileTest(unittest.TestCase):
         import pickle
         old = dict(self.project, magic=project.LEGACY_MAGIC, version=3)
         del old["civs"]                         # older still: no civs
+        del old["extra_files"]                  # (nor custom files)
         path = os.path.join(self.tmp, "old" + project.LEGACY_EXT)
         with open(path, "wb") as fh:
             pickle.dump(old, fh)
         loaded, version = project.load_project(path)
-        self.assertEqual((version, loaded["civs"]), (3, []))
+        self.assertEqual((version, loaded["civs"], loaded["extra_files"]),
+                         (3, [], []))
         self.assertEqual(project.project_path_for(path),
                          os.path.join(self.tmp, "old" + project.PROJECT_EXT))
         # a pickle under another name is never unpickled
@@ -1631,6 +1850,11 @@ class ProjectFileTest(unittest.TestCase):
         with open(path, "w") as fh:
             json.dump({"magic": "something else", "leaders": []}, fh)
         with self.assertRaisesRegex(ValueError, "does not look"):
+            project.load_project(path)
+        with open(path, "w") as fh:
+            json.dump({"magic": project.PROJECT_MAGIC, "leaders": [],
+                       "extra_files": ["Rules.sql"]}, fh)
+        with self.assertRaisesRegex(ValueError, "custom file"):
             project.load_project(path)
         self.assertEqual(project.json_ready({"c": (1, 2)}), {"c": [1, 2]})
 
@@ -1769,12 +1993,69 @@ class CopiedEffectsTest(unittest.TestCase):
                          ("trade_capacity", "1"))
         self.assertEqual(modifiers.describe_game_modifier(mod),
                          "+1 Trade Route capacity")
-        # one the editor cannot express is described, not converted
+        # one no template expresses becomes a raw (advanced) effect
         grant = [m for m in data.base_effects("building", "BUILDING_BARRACKS")
                  if m["modifier_type"] ==
                  "MODIFIER_SINGLE_CITY_GRANT_ABILITY_FOR_TRAINED_UNITS"][0]
-        self.assertIsNone(modifiers.effect_from_game(grant))
+        effect = modifiers.effect_from_game(grant, "building")
+        self.assertTrue(modifiers.is_raw(effect))
+        self.assertIn("AbilityType", effect["args"])
         self.assertIn("AbilityType", modifiers.describe_game_modifier(grant))
+        # a unit template on another owner would become a granted one
+        combat = {"id": "X", "modifier_type":
+                  "MODIFIER_UNIT_ADJUST_COMBAT_STRENGTH",
+                  "args": {"Amount": "5"}, "run_once": False,
+                  "permanent": False, "subject_reqs": [], "owner_reqs": []}
+        self.assertEqual(modifiers.effect_from_game(combat, "unit")[
+            "template"], "combat_strength")
+        self.assertTrue(modifiers.is_raw(
+            modifiers.effect_from_game(combat, "trait")))
+
+    def test_every_game_effect_round_trips(self):
+        """Each of the game's ability and belief modifiers, copied into an
+        ability, is written back as it was."""
+        data = game_data()
+        mods = [m for source in ("trait", "belief")
+                for item, _ in data.source_items(source)
+                for m in data.game_modifiers(source, item)]
+        self.assertGreater(len(mods), 500)
+        effects = [modifiers.effect_from_game(m, "trait") for m in mods]
+        for effect in effects:
+            modifiers.check_effect(effect, "trait", data)
+        sql, _ = modifiers.effects_sql("trait", "TRAIT_TST_COPY", effects,
+                                       "Copy", data.type_name)
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        db = database("DebugGameplay.sqlite", tmp)
+        self.addCleanup(db.close)
+        db.executescript("BEGIN; INSERT INTO Types (Type, Kind) VALUES "
+                         "('TRAIT_TST_COPY', 'KIND_TRAIT');"
+                         "INSERT INTO Traits (TraitType) VALUES "
+                         "('TRAIT_TST_COPY');" + sql + "COMMIT;")
+        self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(),
+                         [])
+        for n, (mod, effect) in enumerate(zip(mods, effects), 1):
+            if not modifiers.is_raw(effect):
+                continue
+            mod_id = "TST_COPY_MOD_{}".format(n)
+            row = db.execute("SELECT ModifierType, RunOnce, Permanent FROM "
+                             "Modifiers WHERE ModifierId = ?",
+                             (mod_id,)).fetchone()
+            self.assertEqual(row, (mod["modifier_type"],
+                                   int(mod["run_once"]),
+                                   int(mod["permanent"])), mod["id"])
+            args = dict(db.execute("SELECT Name, Value FROM "
+                                   "ModifierArguments WHERE ModifierId = ?",
+                                   (mod_id,)).fetchall())
+            self.assertEqual(args, mod["args"], mod["id"])
+            for key, target in (("subject_reqs", "Subject"),
+                                ("owner_reqs", "Owner")):
+                found = db.execute(
+                    "SELECT COUNT(*) FROM RequirementSetRequirements r JOIN "
+                    "Modifiers m ON r.RequirementSetId = m.{}"
+                    "RequirementSetId WHERE m.ModifierId = ?".format(target),
+                    (mod_id,)).fetchone()[0]
+                self.assertEqual(found, len(mod[key]), mod["id"])
 
     def test_skipped_effects_are_not_copied(self):
         u = uniques.new_unique_spec("building")
@@ -1799,3 +2080,230 @@ class CopiedEffectsTest(unittest.TestCase):
         self.assertEqual(db.execute(
             "SELECT ModifierId FROM BuildingModifiers WHERE BuildingType = "
             "'BUILDING_TST_BAZAAR'").fetchall(), [])
+
+
+class EffectFormsTest(unittest.TestCase):
+    """Raw effects, raw and grouped requirements and attached effects
+    (the advanced effect editor's); no game needed."""
+
+    class FakeData:
+        """Game data that knows a few modifiers and requirement sets."""
+        conn = True
+
+        def has_modifier_type(self, t):
+            return t != "MODIFIER_NOPE"
+
+        def has_requirement_type(self, t):
+            return t != "REQUIREMENT_NOPE"
+
+        def is_attach(self, t):
+            return "ATTACH" in t
+
+        def has_modifier(self, mod_id):
+            return mod_id == "GAME_MODIFIER"
+
+        def has_requirement_set(self, set_id):
+            return set_id == "GAME_SET"
+
+    def test_summaries(self):
+        self.assertEqual(
+            modifiers.summary(attaching_effect()),
+            "Cities attach modifier: +10% Production in this city (only "
+            "if: any of (City has district Campus; City has building "
+            "Library))")
+        gold = modifiers.new_raw_effect(
+            "MODIFIER_PLAYER_GRANT_YIELD",
+            {"Amount": "100", "YieldType": "YIELD_GOLD"})
+        self.assertEqual(modifiers.summary(gold),
+                         "Grant yield: Amount 100, YieldType Gold")
+        gold["text"] = "+100 Gold"
+        self.assertEqual(modifiers.summary(gold), "+100 Gold")
+        yields = modifiers.new_effect("city_yield")
+        yields["reqs"] = [{"preset": "city_district",
+                           "value": "DISTRICT_CAMPUS"},
+                          {"type": "REQUIREMENT_PLOT_IS_HILLS", "not": True}]
+        self.assertEqual(modifiers.summary(yields),
+                         "+1 Production in every city (only if: City has "
+                         "district Campus; not: Plot is hills)")
+        yields["set_types"] = {"subject": "ANY"}
+        self.assertEqual(modifiers.summary(yields),
+                         "+1 Production in every city (only if: any of "
+                         "(City has district Campus; not: Plot is hills))")
+
+    def test_is_advanced(self):
+        effect = modifiers.new_effect("city_yield")
+        self.assertFalse(modifiers.is_advanced(effect))
+        effect["reqs"] = [{"preset": "has_tech", "value": "TECH_WRITING"}]
+        self.assertFalse(modifiers.is_advanced(effect))
+        self.assertTrue(modifiers.is_advanced(
+            dict(effect, set_types={"owner": "ANY"})))
+        self.assertFalse(modifiers.is_advanced(
+            dict(effect, set_types={"owner": "ALL"})))
+        self.assertTrue(modifiers.is_advanced(dict(effect, reqs=[
+            {"type": "REQUIREMENT_PLOT_IS_HILLS"}])))
+        self.assertTrue(modifiers.is_advanced(attaching_effect()))
+        self.assertTrue(modifiers.is_advanced(modifiers.new_raw_effect(
+            "MODIFIER_PLAYER_GRANT_YIELD")))
+
+    def test_checks(self):
+        check = modifiers.check_effect
+        check(attaching_effect(), "trait")
+        check(attaching_effect(), "building")
+
+        def fails(effect, pattern, owner="trait", data=None):
+            with self.assertRaisesRegex(ValueError, pattern):
+                check(effect, owner, data)
+        raw = modifiers.new_raw_effect
+        fails(raw(""), "modifier type")
+        fails(raw("modifier_lower"), "modifier type")
+        fails(raw("MODIFIER_X", {"Amount": " "}), "no value")
+        fails(raw("MODIFIER_X", {"1st": "1"}), "argument name")
+        fails(dict(raw("MODIFIER_X"), set_types={"subject": "MOST"}),
+              "requirement set")
+        fails(dict(raw("MODIFIER_X"), columns={"Bogus": 1}), "column")
+        fails(dict(raw("MODIFIER_X"), strings={"Bogus": "LOC_X"}), "text")
+        fails(dict(raw("MODIFIER_X"), arg_types={"A": {"Type": "Bogus"}}),
+              "type of argument")
+        group = {"group": "ANY", "reqs": []}
+        fails(dict(raw("MODIFIER_X"), reqs=[group]), "empty group")
+        group["reqs"] = [{"group": "ALL", "reqs": [
+            {"type": "REQUIREMENT_PLOT_IS_HILLS"}]}]
+        fails(dict(raw("MODIFIER_X"), reqs=[group]), "another group")
+        fails(dict(raw("MODIFIER_X"), reqs=[{"group": "SOME", "reqs": [
+            {"type": "REQUIREMENT_PLOT_IS_HILLS"}]}]), "'ALL' or 'ANY'")
+        fails(dict(raw("MODIFIER_X"), reqs=[{"type": ""}]), "type")
+        fails(dict(raw("MODIFIER_X"), reqs=[{
+            "type": "REQUIREMENT_X", "target": "nobody"}]), "target")
+        fails(dict(raw("MODIFIER_X"), reqs=[{
+            "type": "REQUIREMENT_X", "args": {"A": ""}}]), "a value")
+        # (a template's owner checks still apply)
+        fails(modifiers.new_effect("free_unit"), "cannot be used here")
+        # effects attaching effects attaching ...
+        deep = modifiers.new_effect("city_yield")
+        for _ in range(modifiers.MAX_DEPTH + 1):
+            deep = dict(raw("MODIFIER_PLAYER_CITIES_ATTACH_MODIFIER"),
+                        attached=deep)
+        fails(deep, "deep")
+
+    def test_checks_with_game_data(self):
+        data, raw = self.FakeData(), modifiers.new_raw_effect
+
+        def fails(effect, pattern):
+            with self.assertRaisesRegex(ValueError, pattern):
+                modifiers.check_effect(effect, "trait", data)
+        fails(raw("MODIFIER_NOPE"), "no modifier type")
+        fails(raw("MODIFIER_X_ATTACH"), "needs the effect it attaches")
+        fails(raw("MODIFIER_X_ATTACH", {"ModifierId": "OTHER"}),
+              "no modifier OTHER")
+        modifiers.check_effect(raw("MODIFIER_X_ATTACH",
+                                   {"ModifierId": "GAME_MODIFIER"}),
+                               "trait", data)
+        fails(dict(raw("MODIFIER_GRANT"),
+                   attached=modifiers.new_effect("city_yield")),
+              "does not attach")
+        fails(dict(raw("MODIFIER_X"), reqs=[{"type": "REQUIREMENT_NOPE"}]),
+              "no requirement type")
+        nested = {"type": modifiers.NESTED_SET,
+                  "args": {"RequirementSetId": "NOPE"}}
+        fails(dict(raw("MODIFIER_X"), reqs=[nested]), "no requirement set")
+        nested["args"]["RequirementSetId"] = "GAME_SET"
+        modifiers.check_effect(dict(raw("MODIFIER_X"), reqs=[nested]),
+                               "trait", data)
+        # without the game data, anything may be the game's
+        modifiers.check_effect(raw("MODIFIER_NOPE"), "trait",
+                               NewLeaderTest.NoData())
+
+    def test_sql(self):
+        sql, texts = modifiers.effects_sql("trait", "TRAIT_X",
+                                           [attaching_effect()], "X")
+        self.assertIn("('X_MOD_1', 'ModifierId', 'ARGTYPE_IDENTITY', "
+                      "'X_MOD_1_ATTACHED')", sql)
+        self.assertIn("('X_MOD_1_SUBJECT_REQS_1_SET', "
+                      "'REQUIREMENTSET_TEST_ANY')", sql)
+        self.assertIn("('X_MOD_1_SUBJECT_REQS', 'REQUIREMENTSET_TEST_ALL')",
+                      sql)
+        self.assertIn("('X_MOD_1_SUBJECT_REQS_1', 'RequirementSetId', "
+                      "'ARGTYPE_IDENTITY', 'X_MOD_1_SUBJECT_REQS_1_SET')", sql)
+        # only the attaching effect belongs to the ability
+        self.assertEqual(sql.count("INSERT INTO TraitModifiers"), 1)
+        self.assertEqual(texts, [])
+        # a template's unit effect that is attached is not granted through
+        # a unit ability (the attaching effect picks the units)
+        units = dict(modifiers.new_raw_effect(
+            "MODIFIER_PLAYER_UNITS_ATTACH_MODIFIER"),
+            attached=modifiers.new_effect("combat_strength"))
+        sql, _ = modifiers.effects_sql("trait", "TRAIT_X", [units], "X")
+        self.assertNotIn("GRANT_ABILITY", sql)
+        self.assertIn("('X_MOD_1_ATTACHED', 'Preview'", sql)
+
+    def test_game_text_is_kept(self):
+        """A copied adjacency's tooltip names the game's own text."""
+        effect = modifiers.new_effect("district_adjacency")
+        effect["args"].update(DistrictType="DISTRICT_CAMPUS",
+                              Description="LOC_DISTRICT_SOMETHING")
+        sql, texts = modifiers.effects_sql("trait", "TRAIT_X", [effect], "X")
+        self.assertIn("'Description', 'ARGTYPE_IDENTITY', "
+                      "'LOC_DISTRICT_SOMETHING'", sql)
+        self.assertEqual(texts, [])
+
+
+@unittest.skipUnless(CACHE and GAME_DIR, "needs the game and its cache")
+class EffectGameDataTest(unittest.TestCase):
+    """The game data the advanced effect editor offers and checks."""
+
+    def test_schema(self):
+        data = game_data()
+        self.assertGreater(len(data.modifier_types()), 500)
+        self.assertGreater(len(data.requirement_types()), 200)
+        for t in ("MODIFIER_PLAYER_CITIES_ATTACH_MODIFIER",
+                  "MODIFIER_ALL_PLAYERS_ATTACH_MODIFIER"):
+            self.assertTrue(data.is_attach(t), t)
+        self.assertFalse(data.is_attach("MODIFIER_PLAYER_GRANT_YIELD"))
+        names = [a[0] for a in data.modifier_args(
+            "MODIFIER_PLAYER_GRANT_YIELD")]
+        self.assertIn("Amount", names)
+        self.assertIn("YieldType", names)
+        self.assertEqual(data.requirement_args(
+            "REQUIREMENT_PLOT_TERRAIN_TYPE_MATCHES")[0][0], "TerrainType")
+        self.assertTrue(data.source_items("belief"))
+        self.assertTrue(data.type_choices("ability"))
+        # the arguments of templates are those the game gives their types
+        for t in modifiers.TEMPLATES.values():
+            mined = {a[0] for a in data.modifier_args(t.modifier_type)}
+            for a in t.args:
+                if mined and a.kind not in ("text", "fixed"):
+                    self.assertIn(a.name, mined, t.id)
+
+    def test_prepare_reports_bad_effects(self):
+        leader_specs, civ_specs = sample_project()
+        civ_specs[0]["ability"]["effects"].append(
+            modifiers.new_raw_effect("MODIFIER_NOPE"))
+        _, _, errors = modbuild.prepare_project(leader_specs, civ_specs,
+                                                game_data(), "TST")
+        self.assertIn("Amazons (civilization ability): effect 5 - the game "
+                      "has no modifier type MODIFIER_NOPE",
+                      "\n".join(errors))
+        leader_specs, civ_specs = sample_project()
+        civ_specs[0]["uniques"][1]["effects"].append(
+            modifiers.new_raw_effect("MODIFIER_ALL_PLAYERS_ATTACH_MODIFIER",
+                                     {"ModifierId": "NO_SUCH_MODIFIER"}))
+        leader_specs[1]["new_ability"]["effects"].append(
+            modifiers.new_raw_effect("MODIFIER_PLAYER_GRANT_YIELD",
+                                     {"Amount": ""}))
+        _, _, errors = modbuild.prepare_project(leader_specs, civ_specs,
+                                                game_data(), "TST")
+        text = "\n".join(errors)
+        self.assertIn("Temple of Ares (Amazons): effect 2 - ", text)
+        self.assertIn("no modifier NO_SUCH_MODIFIER", text)
+        self.assertIn("Hippolyta (leader ability): effect 2 - ", text)
+
+    def test_same_effect_ids(self):
+        leader_specs, civ_specs = sample_project()
+        twin = uniques.new_unique_spec("building")
+        twin.update(name="Amazon Warrior", base="BUILDING_LIBRARY",
+                    effects=[modifiers.new_effect("tourism")])
+        civ_specs[0]["uniques"].append(twin)
+        _, _, errors = modbuild.prepare_project(leader_specs, civ_specs,
+                                                game_data(), "TST")
+        self.assertIn("both have effects and the same name",
+                      "\n".join(errors))

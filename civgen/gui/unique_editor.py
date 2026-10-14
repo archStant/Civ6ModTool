@@ -13,7 +13,8 @@ from .model_designer import ModelDesigner
 from .landmark_editor import (BuildingModelFrame, DistrictModelFrame,
                               ImprovementModelFrame)
 from .placement_editor import ImprovementPlacementFrame, PlacementFrame
-from ..modifiers import describe_game_modifier, effect_from_game
+from ..modifiers import (describe_game_modifier, effect_from_game,
+                         is_advanced)
 from ..uniques import (normalize_improvement_art,
                        normalize_improvement_placement, normalize_placement)
 from ..landmarks import normalize_building_art, normalize_district_art
@@ -399,26 +400,43 @@ class UniqueEditor(tk.Toplevel):
         ttk.Label(box, wraplength=820, justify="left",
                   foreground=theme.hint(), text=(
                       "Kept effects work as in the game. Untick one to "
-                      "leave it out. \"Copy into my effects\" turns those "
-                      "the effect list below can express into effects you "
-                      "can edit (the others stay as they are).")).grid(
+                      "leave it out. \"Copy into my effects\" turns them "
+                      "into effects you can edit{}.".format(
+                          "" if self.effects.advanced else
+                          " - those the effect list below can express "
+                          "(the others stay as they are; Advanced mode "
+                          "copies every one)"))).grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, 4))
         name_of = self._name_of
         for i, mod in enumerate(mods, 1):
             var = tk.BooleanVar(value=mod["id"] not in self.skip_effects)
             ttk.Checkbutton(box, text="Keep", variable=var).grid(
                 row=i, column=0, sticky="w", padx=(0, 8))
-            editable = effect_from_game(mod) is not None
-            ttk.Label(box, text=describe_game_modifier(mod, name_of)).grid(
+            ttk.Label(box, text=describe_game_modifier(
+                mod, name_of, self.app.data.read_modifier)).grid(
                 row=i, column=1, sticky="w")
             ttk.Label(box, foreground=theme.hint(),
-                      text="editable" if editable else "as in the game"
-                      ).grid(row=i, column=2, sticky="w", padx=(12, 0))
+                      text=self._copied_label(mod)).grid(
+                row=i, column=2, sticky="w", padx=(12, 0))
             self.copied_rows[mod["id"]] = (var, mod)
         ttk.Button(box, text="Copy into my effects",
                    command=self.copy_effects).grid(
             row=len(mods) + 1, column=0, columnspan=2, sticky="w",
             pady=(6, 0))
+
+    def _copied_effect(self, mod):
+        """The editable effect a copied game modifier becomes, or None if
+        only the advanced mode can edit it (and that is off)."""
+        effect = effect_from_game(mod, self.kind)
+        if is_advanced(effect) and not self.effects.advanced:
+            return None
+        return effect
+
+    def _copied_label(self, mod):
+        effect = self._copied_effect(mod)
+        if effect is None:
+            return "as in the game"
+        return "editable (advanced)" if is_advanced(effect) else "editable"
 
     def copy_effects(self):
         """The kept copied effects the editor can express become effects
@@ -427,7 +445,7 @@ class UniqueEditor(tk.Toplevel):
         for var, mod in self.copied_rows.values():
             if not var.get():
                 continue
-            effect = effect_from_game(mod)
+            effect = self._copied_effect(mod)
             if effect is None:
                 left += 1
                 continue
@@ -439,8 +457,9 @@ class UniqueEditor(tk.Toplevel):
             "Effects copied", "{} effect{} copied into this {}'s own "
             "effects{}.".format(
                 copied, "" if copied == 1 else "s", self.kind,
-                "; {} cannot be edited here and stay{} copied as in the "
-                "game".format(left, "s" if left == 1 else "")
+                "; {} can only be edited in Advanced mode and stay{} "
+                "copied as in the game".format(left,
+                                               "s" if left == 1 else "")
                 if left else ""), parent=self)
 
     def skipped_effects(self):

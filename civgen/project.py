@@ -27,7 +27,8 @@ def json_ready(value):
 
 def save_project(project, path):
     """Write project (a dict of the GUI's state: mod_name, prefix,
-    output_dir, guid, leaders, civs, workshop, ...) to path as JSON.
+    output_dir, guid, leaders, civs, workshop, extra_files, ...) to path
+    as JSON.
     Written to a temporary file first, so a failed save never leaves a
     broken project behind. Raises OSError (or TypeError for a value JSON
     cannot hold)."""
@@ -74,6 +75,14 @@ def load_project(path):
     if not isinstance(project["civs"], list) or not all(
             isinstance(c, dict) and "name" in c for c in project["civs"]):
         raise ValueError("The project contains a malformed civilization "
+                         "entry.")
+    # files of the user's own added to the mod (see
+    # modbuild.check_extra_files)
+    project.setdefault("extra_files", [])
+    if not isinstance(project["extra_files"], list) or not all(
+            isinstance(f, dict) and isinstance(f.get("path"), str)
+            for f in project["extra_files"]):
+        raise ValueError("The project contains a malformed custom file "
                          "entry.")
     for spec in project["leaders"]:     # JSON turned the tuples into lists
         for key in TUPLE_KEYS:

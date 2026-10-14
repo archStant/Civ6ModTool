@@ -9,7 +9,18 @@ A desktop tool for making Civilization VI mods without writing SQL or XML. It ge
 The output is a complete mod folder that the game loads like any other mod. It can be published on the Steam Workshop with the SDK's uploader.
 
 ### What it does not do
-Any sort of modding beyond the above mentioned, such as new ressources, great people, yields, governors, beliefs, etc. etc. etc. will still require you to open ModBuddy and write the code yourself.
+Any sort of modding beyond the above mentioned, such as new ressources, great people, yields, governors, beliefs, etc. etc. etc. will still require you to open ModBuddy and write the code yourself. In **Advanced mode** you can add those files of your own to the generated mod (see below).
+
+## Advanced mode
+The **Advanced mode** switch in the toolbar (remembered between sessions) unlocks:
+
+- **Any game modifier as an effect**: besides the effect list, an effect can be any of the game's modifier types, with the arguments the game gives it suggested from its own uses.
+- **Any requirement**: conditions can be any of the game's requirement types, grouped so that *any one* or *all* of them are needed.
+- **Effects attaching effects**: e.g. an ability that gives every city with a Campus an effect of its own.
+- **Import from game...**: copy the effects of any ability, belief, building, district, improvement, unit ability, promotion, governor title or great person.
+- **Custom files...**: SQL, XML or Lua files of your own, copied into the mod and loaded with the action you choose.
+
+Basic mode keeps to the effect list. Advanced effects already in a project stay in the mod in either mode, but can only be edited in Advanced mode.
 
 ## Acknowledgements
 Many many thanks to [Maconnolly](https://forums.civfanatics.com/members/maconnolly.319458/) for his very thorough mod template and instructions. This was the Rosetta stone for getting into Civ 6 modding for so many of us.
@@ -69,5 +80,5 @@ Most tests generate mods and run their SQL against copies of the game's own data
 
 - **3D models** are assembled from the game's existing models and meshes. New models cannot be imported.
 - **Leaders** have no animated 3D scene. The diplomacy screen shows a still image made from the loading portrait, or optionally a different picture for each mood or moment (happy, unhappy, declaring war, ...), in front of the leader's diplomacy background or another leader's scene.
-- **Effects** are built from a library of the game's modifier types. Some only exist with the expansions.
+- **Effects** are built from a library of the game's modifier types, or in Advanced mode from any of them. They are checked against the loaded game data, so they cannot use modifier types, modifiers or requirement sets that only custom files add. Some only exist with the expansions.
 - **DLC items:** a mod that copies an item from a DLC needs that DLC to be enabled.

@@ -5,7 +5,7 @@ import re
 
 from .util import asset_path, slug_for_name, sql_str, value_or_column
 from .gamedata import TRAIT_RULE_TABLES
-from .modifiers import effects_sql, summary
+from .modifiers import check_effects, effects_sql, summary
 from .civs import STANDARD_DOMAINS
 from .uniques import player_item_sql
 from .moments import normalize_moments
@@ -280,6 +280,8 @@ def normalize_spec(spec, data, prefix="", civs=None):
             raise ValueError("{}: give the new leader ability a name."
                              .format(name))
         trait = "TRAIT_" + slug
+        check_effects(given.get("effects"), "trait", data,
+                      "{} (leader ability)".format(name))
         sql, texts = effects_sql("trait", trait, given.get("effects") or [],
                                  ability_name, data.type_name)
         new_ability = {

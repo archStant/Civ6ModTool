@@ -522,6 +522,36 @@ class TypeCombo(ttk.Combobox):
         return self.labels.get(text) or parse_type(text)
 
 
+def filter_matches(choices, text):
+    """The choices containing every word of text (any case)."""
+    words = (text or "").lower().split()
+    return [c for c in choices if all(w in c.lower() for w in words)]
+
+
+class FilterCombo(ttk.Combobox):
+    """An editable combobox whose list narrows, as you type, to the
+    choices containing every word typed (any case). value() is the text
+    as typed - unlike TypeCombo, never changed (e.g. upper-cased)."""
+
+    def __init__(self, parent, choices=(), value="", width=40, **kw):
+        self.var = tk.StringVar(value=value or "")
+        super().__init__(parent, textvariable=self.var, width=width, **kw)
+        self.set_choices(choices)
+        self.bind("<KeyRelease>", self._filter, add="+")
+
+    def set_choices(self, choices):
+        self.choices = list(choices)
+        self["values"] = self.choices
+
+    def _filter(self, event):
+        if event.keysym in ("Up", "Down", "Return", "Escape", "Tab"):
+            return
+        self["values"] = filter_matches(self.choices, self.var.get())
+
+    def value(self):
+        return self.var.get().strip()
+
+
 def names_text(parent, names, height=12, width=30):
     """A text box with one name per line (and a scrollbar); returns
     (frame, tk.Text)."""

@@ -40,7 +40,7 @@ A unique spec is a plain picklable dict:
 import os
 
 from .util import slug_for_name, sql_str
-from .modifiers import effects_sql
+from .modifiers import check_effects, effects_sql
 from .texts import history_paragraphs, loc_text
 from .artdefs import (BUILDINGS_ARTDEF, DISTRICTS_ARTDEF,
                       IMPROVEMENTS_ARTDEF, UNITS_ARTDEF)
@@ -529,6 +529,7 @@ def normalize_unique(spec, civ, data, prefix=""):
     if kind == "district" and not base and not art.get("look_from"):
         raise ValueError("{}: pick the district a new district looks like "
                          "(3D model tab).".format(label))
+    check_effects(spec.get("effects"), kind, data, label)
     # the game item its art definition and icons start from
     model_from = base or art.get("look_from") or replaced
     return {

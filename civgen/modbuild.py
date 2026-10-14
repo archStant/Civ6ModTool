@@ -16,7 +16,7 @@ from .art import (DIPLO_BG_MASK, ICON_SIZES, MOMENT_HALF_OPACITY, MOMENT_MASK,
                   PORTRAIT_SIZE, add_texture, apply_image_mask, cook_art,
                   atlas_image, fitted_portrait, make_circle_icon,
                   shift_hue)
-from .workshop import STAMP_FILE
+from .workshop import FORBIDDEN, STAMP_FILE
 from .moments import MOMENT_ILLUSTRATION_SIZE
 from .moods import fallback_slot, resolve_slot
 from .moods import slot_label as mood_label
@@ -86,6 +86,111 @@ XP2_ACTION = """
       <File>{}</File>
     </UpdateDatabase>""".format(XP2_FILE)
 
+# Files of the user's own (advanced mode: SQL, XML, Lua...), copied into
+# the mod as they are and loaded by the action chosen for each
+CUSTOM_DIR = "Custom"
+# action -> where it can run ("InGame": in a game, "FrontEnd": the menus)
+CUSTOM_ACTIONS = {
+    "UpdateDatabase": ("InGame", "FrontEnd"),
+    "UpdateText": ("InGame", "FrontEnd"),
+    "UpdateIcons": ("InGame", "FrontEnd"),
+    "UpdateColors": ("InGame", "FrontEnd"),
+    "ImportFiles": ("InGame", "FrontEnd"),
+    "AddGameplayScripts": ("InGame",),
+    "AddUserInterfaces": ("InGame",),
+}
+# when a custom file is loaded: criteria id ("": always) -> label
+CUSTOM_CRITERIA = {"": "Always",
+                   "Expansion1AndBeyond": "With Rise and Fall or Gathering "
+                                          "Storm",
+                   "Expansion2AndBeyond": "With Gathering Storm"}
+# (after the generated files, 1000 and 1001, which they may change)
+CUSTOM_LOAD_ORDER = 1100
+
+
+def custom_action_for(path):
+    """The usual action for a file: SQL and XML update the database, Lua
+    is a gameplay script; anything else is imported."""
+    ext = os.path.splitext(path)[1].lower()
+    return {".sql": "UpdateDatabase", ".xml": "UpdateDatabase",
+            ".lua": "AddGameplayScripts"}.get(ext, "ImportFiles")
+
+
+def new_custom_file(path=""):
+    return {"path": path, "action": custom_action_for(path),
+            "scope": "InGame", "load_order": CUSTOM_LOAD_ORDER,
+            "criteria": ""}
+
+
+def check_extra_files(entries):
+    """The project's custom files (see new_custom_file), checked: returns
+    (files, errors), files as dicts with "name" too (the file's path in
+    the mod: CUSTOM_DIR/<its file name> - never renamed, as the game
+    finds imported files and UI pairs by name)."""
+    files, errors, names = [], [], {}
+    for entry in entries or []:
+        path = (entry.get("path") or "").strip()
+        base = os.path.basename(path)
+        label = "Custom file {}".format(base or "(none)")
+        if not path or not os.path.isfile(path):
+            errors.append("{}: not found ({}).".format(label, path or
+                                                      "no file chosen"))
+            continue
+        if base.lower().endswith(FORBIDDEN):
+            errors.append("{}: the Steam Workshop does not take such "
+                          "files.".format(label))
+        action = entry.get("action")
+        scope = entry.get("scope") or "InGame"
+        criteria = entry.get("criteria") or ""
+        if action not in CUSTOM_ACTIONS:
+            errors.append("{}: unknown action '{}'.".format(label, action))
+        elif scope not in CUSTOM_ACTIONS[action]:
+            errors.append("{}: {} only works in a game (InGame), not in the "
+                          "menus.".format(label, action))
+        if criteria not in CUSTOM_CRITERIA:
+            errors.append("{}: unknown criteria '{}'.".format(label,
+                                                              criteria))
+        try:
+            order = int(entry.get("load_order", CUSTOM_LOAD_ORDER))
+        except (TypeError, ValueError):
+            errors.append("{}: the load order must be a whole number."
+                          .format(label))
+            order = CUSTOM_LOAD_ORDER
+        if base.lower() in names:
+            errors.append("{}: two custom files have this name, and the "
+                          "mod keeps them in one folder - rename one."
+                          .format(label))
+        names[base.lower()] = path
+        files.append({"path": path, "name": CUSTOM_DIR + "/" + base,
+                      "action": action, "scope": scope,
+                      "load_order": order, "criteria": criteria})
+    return files, errors
+
+
+def custom_actions_xml(custom, scope):
+    """The .modinfo actions of the custom files (check_extra_files) of a
+    scope: one per action, load order and criteria."""
+    groups = {}
+    for f in custom:
+        if f["scope"] == scope:
+            groups.setdefault((f["action"], f["load_order"], f["criteria"]),
+                              []).append(f["name"])
+    out = ""
+    for n, ((action, order, criteria), names) in enumerate(
+            sorted(groups.items()), 1):
+        out += ("\n    <{action} id=\"{scope}Custom{n}\">\n"
+                "      <Properties><LoadOrder>{order}</LoadOrder>{context}"
+                "</Properties>\n{criteria}{files}\n    </{action}>").format(
+            action=action, scope=scope, n=n, order=order,
+            context="<Context>InGame</Context>"
+            if action == "AddUserInterfaces" else "",
+            criteria="      <Criteria>{}</Criteria>\n".format(criteria)
+            if criteria else "",
+            files="\n".join("      <File>{}</File>".format(xml_escape(name))
+                            for name in names))
+    return out
+
+
 # Icons of new civilizations and uniques that are the game's own icons
 # under new names (copied IconDefinitions rows)
 ICONS_SQL_FILE = "Config/NewCiv_Icons.sql"
@@ -154,15 +259,18 @@ def modinfo_name(folder):
 
 def build_modinfo(mod_name, description, guid, has_icons, dep_file, files,
                   has_moments=False, has_scene=False, icons_sql=False,
-                  has_xp2=False, has_civs=False, version=1, authors=""):
+                  has_xp2=False, has_civs=False, version=1, authors="",
+                  custom=()):
     """dep_file: mod-relative .dep path when art (cooked or .artdef files)
     exists, else None. has_moments: add the expansion-only historic moment
     action. has_scene: import the patched UI/LeaderScene.lua. icons_sql:
     add ICONS_SQL_FILE (icons copied from the game's) to the icon action.
     has_xp2: add the Gathering Storm-only XP2_FILE action. has_civs: the
     mod adds civilizations. version: the mod's version (raise it for each
-    Workshop update); authors: shown in the game's mod list. The mod
-    changes gameplay, so saved games need it (AffectsSavedGames)."""
+    Workshop update); authors: shown in the game's mod list. custom: the
+    custom files' actions (see check_extra_files; their files are in
+    files). The mod changes gameplay, so saved games need it
+    (AffectsSavedGames)."""
     def icons(scope):
         if has_icons and not icons_sql:
             out = ICONS_ACTION.format(scope=scope)
@@ -180,13 +288,16 @@ def build_modinfo(mod_name, description, guid, has_icons, dep_file, files,
             out += XP2_ACTION
         if scope == "InGame" and has_scene:
             out += LEADER_SCENE_ACTION
-        return out
+        return out + custom_actions_xml(custom, scope)
 
+    used = {f["criteria"] for f in custom}
+    expansion1 = has_moments or "Expansion1AndBeyond" in used
+    expansion2 = has_xp2 or "Expansion2AndBeyond" in used
     criteria = "\n  <ActionCriteria/>"
-    if has_moments or has_xp2:
+    if expansion1 or expansion2:
         criteria = "\n  <ActionCriteria>{}{}\n  </ActionCriteria>".format(
-            EXPANSION1_CRITERION if has_moments else "",
-            EXPANSION2_CRITERION if has_xp2 else "")
+            EXPANSION1_CRITERION if expansion1 else "",
+            EXPANSION2_CRITERION if expansion2 else "")
     return """<?xml version="1.0" encoding="utf-8"?>
 <Mod id="{guid}" version="{version}">
   <Properties>
@@ -507,6 +618,19 @@ def prepare_project(leader_specs, civ_specs, data, prefix=""):
             continue
         seen.update((t, cc["name"]) for t in types)
         civ_ctxs.append(cc)
+    # effects' ids are their owner's type without its first word, so a
+    # unit and a building of one name would share them
+    effect_ids = {}
+    for cc in civ_ctxs:
+        for u in cc["uniques"]:
+            if not u["effects"]:
+                continue
+            short = u["slug"].split("_", 1)[-1]
+            if short in effect_ids:
+                errors.append("{} and {} both have effects and the same "
+                              "name - rename one of them.".format(
+                                  effect_ids[short], u["label"]))
+            effect_ids[short] = u["label"]
     civs = {cc["slug"]: cc for cc in civ_ctxs}
     by_id = {cc["id"]: cc["slug"] for cc in civ_ctxs if cc["id"]}
     ctxs = []
@@ -580,14 +704,16 @@ def prepare_project(leader_specs, civ_specs, data, prefix=""):
 # ---------------------------------------------------------------------------
 
 def write_mod(mod_name, ctxs, folder, mod_dir, guid, cooker, report,
-              progress, civs=(), name_of=None, publish=None, stamp=None):
+              progress, civs=(), name_of=None, publish=None, stamp=None,
+              extra_files=()):
     """Cook the art and write every mod file (runs in a worker thread,
     so no Tk calls here; progress(text) updates the busy window). civs:
     contexts of the project's new civilizations (civs.normalize_civ);
     name_of(kind, type): English name of a game type (effect texts).
     publish: the .modinfo's Workshop values ({"version", "author",
     "description" - plain text}); stamp: written to STAMP_FILE (see
-    workshop.build_stamp). Returns the number of custom icons. Raises
+    workshop.build_stamp); extra_files: the custom files, checked (see
+    check_extra_files). Returns the number of custom icons. Raises
     OSError."""
     name_of = name_of or (lambda kind, t: type_display_name(t))
     icon_jobs = [(cc, cc["icon_path"], CIV_ICON_SIZES) for cc in civs
@@ -649,6 +775,8 @@ def write_mod(mod_name, ctxs, folder, mod_dir, guid, cooker, report,
         mod_files.append(dep_file)
         mod_files.extend(cooked_files)
         mod_files.extend("ArtDefs/" + f for f in artdef_files)
+    extra_files = list(extra_files)
+    mod_files.extend(f["name"] for f in extra_files)
 
     publish = publish or {}
     description = "Adds alternate leaders: {}.".format(
@@ -678,7 +806,16 @@ def write_mod(mod_name, ctxs, folder, mod_dir, guid, cooker, report,
                         bool(icon_leader_files), dep_file,
                         mod_files, has_moments, bool(scene_lua),
                         bool(icons_sql), bool(xp2_sql), bool(civs),
-                        publish.get("version", 1), publish.get("author", "")))
+                        publish.get("version", 1), publish.get("author", ""),
+                        extra_files))
+    # the custom files: copied as they are (an earlier build's go)
+    custom_dir = os.path.join(mod_dir, CUSTOM_DIR)
+    shutil.rmtree(custom_dir, ignore_errors=True)
+    for f in extra_files:
+        os.makedirs(custom_dir, exist_ok=True)
+        shutil.copyfile(f["path"], os.path.join(mod_dir,
+                                                *f["name"].split("/")))
+        report.append("copied " + f["name"])
     # a .modinfo of an earlier build under another name would register
     # the mod twice
     for old in os.listdir(mod_dir):
