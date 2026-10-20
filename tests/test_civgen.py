@@ -1281,6 +1281,17 @@ class LeaderOnlyTest(unittest.TestCase):
         self.assertIn("<ActionCriteria/>", modinfo)
         self.assertNotIn(modbuild.ICONS_SQL_FILE, modinfo)
 
+    def test_modinfo_text_newlines_use_game_token(self):
+        root = ET.fromstring(modbuild.build_modinfo(
+            "First\nSecond", "First\r\nSecond", "g", False, None, [],
+            authors="First\rSecond"))
+        properties = root.find("Properties")
+        self.assertEqual(properties.findtext("Name"), "First[NEWLINE]Second")
+        self.assertEqual(properties.findtext("Description"),
+                         "First[NEWLINE]Second")
+        self.assertEqual(properties.findtext("Authors"),
+                         "First[NEWLINE]Second")
+
     def test_custom_files_checked(self):
         tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)

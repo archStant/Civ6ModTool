@@ -271,6 +271,10 @@ def build_modinfo(mod_name, description, guid, has_icons, dep_file, files,
     custom files' actions (see check_extra_files; their files are in
     files). The mod changes gameplay, so saved games need it
     (AffectsSavedGames)."""
+    def modinfo_text(value):
+        value = str(value).replace("\r\n", "\n").replace("\r", "\n")
+        return xml_escape(value.replace("\n", "[NEWLINE]"))
+
     def icons(scope):
         if has_icons and not icons_sql:
             out = ICONS_ACTION.format(scope=scope)
@@ -339,9 +343,9 @@ def build_modinfo(mod_name, description, guid, has_icons, dep_file, files,
 {files}
   </Files>
 </Mod>
-""".format(guid=guid, mod_name=xml_escape(mod_name),
-           description=xml_escape(description), version=int(version),
-           authors=xml_escape(authors or "Made with Civ 6 Mod Generator"),
+""".format(guid=guid, mod_name=modinfo_text(mod_name),
+           description=modinfo_text(description), version=int(version),
+           authors=modinfo_text(authors or "Made with Civ 6 Mod Generator"),
            ingame_icons=icons("InGame"), frontend_icons=icons("FrontEnd"),
            criteria=criteria,
            teaser="New civilizations and leaders" if has_civs
