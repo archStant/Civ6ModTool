@@ -13,6 +13,10 @@ from .widgets import FilterCombo
 
 TARGET_LABELS = {"subject": "what it applies to", "owner": "its owner",
                  "units": "which units get it"}
+# modifiers.ARG_TYPES -> label
+ARG_TYPE_LABELS = {"ARGTYPE_IDENTITY": "plain",
+                   "ScaleByGameSpeed": "× game speed",
+                   "LinearScaleFromDefaultHandicap": "× difficulty"}
 GROUP_LABELS = {"ANY": "Any of these", "ALL": "All of these"}
 
 
@@ -30,12 +34,18 @@ def _labelled_combo(parent, labels, value, width=18, command=None):
 class ArgsTable(ttk.Frame):
     """Arguments (name: value) of a raw effect or requirement: a row each,
     and a list to add one from (the names the game gives the type, with
-    an example value), or any name typed in. dialog: the EffectDialog."""
+    an example value), or any name typed in. dialog: the EffectDialog.
+    typed: each row also has its argument type (a modifier's arguments;
+    arg_types as in a raw effect)."""
 
-    def __init__(self, parent, dialog, args=None):
+    def __init__(self, parent, dialog, args=None, typed=False,
+                 arg_types=None):
         super().__init__(parent)
         self.dialog = dialog
+        self.typed = typed
+        self.start_types = dict(arg_types or {})
         self.rows = []                  # (name, getter, frame)
+        self.types = {}                 # name -> (type getter, spec)
         self.known = []                 # [(name, uses, example, numeric)]
         self.rows_frame = ttk.Frame(self)
         self.rows_frame.pack(anchor="w", fill="x")
@@ -75,6 +85,14 @@ class ArgsTable(ttk.Frame):
         widget, getter = self.dialog.value_widget(frame, ARG_KINDS.get(name),
                                                   str(value))
         widget.pack(side="left")
+        if self.typed:
+            spec = dict(self.start_types.get(name) or {})
+            type_widget, type_getter = _labelled_combo(
+                frame, ARG_TYPE_LABELS,
+                spec.get("Type") or "ARGTYPE_IDENTITY", width=14,
+                command=self.dialog.refresh)
+            type_widget.pack(side="left", padx=(6, 0))
+            self.types[name] = (type_getter, spec)
         row = (name, getter, frame)
         ttk.Button(frame, text="Remove",
                    command=lambda: self._remove(row)).pack(side="left",
@@ -86,6 +104,7 @@ class ArgsTable(ttk.Frame):
     def _remove(self, row):
         row[2].destroy()
         self.rows.remove(row)
+        self.types.pop(row[0], None)
         self._refresh_choices()
         self.dialog.refresh()
 
@@ -93,6 +112,7 @@ class ArgsTable(ttk.Frame):
         for row in list(self.rows):
             row[2].destroy()
         self.rows = []
+        self.types = {}
         self._refresh_choices()
 
     def names(self):
@@ -100,6 +120,22 @@ class ArgsTable(ttk.Frame):
 
     def values(self):
         return {name: getter() for name, getter, _ in self.rows}
+
+    def arg_types(self):
+        """{name: {"Type", ...}} of the rows that are not plain values
+        (a copied game modifier's Extra and SecondExtra kept)."""
+        out = {}
+        for name, (getter, spec) in self.types.items():
+            spec = dict(spec, Type=getter())
+            if spec["Type"] != "ARGTYPE_IDENTITY" or \
+                    spec.get("Extra") is not None or \
+                    spec.get("SecondExtra") is not None:
+                out[name] = spec
+        return out
+
+    def set_types(self, arg_types):
+        """The types rows added from now on start with."""
+        self.start_types = dict(arg_types or {})
 
 
 class RawEffectFrame(ttk.Frame):
@@ -117,6 +153,8 @@ class RawEffectFrame(ttk.Frame):
         args = dict(effect.get("args") or {})
         game_mod = args.pop("ModifierId", "") \
             if data.is_attach(modifier_type) else ""
+        self.modifier_id_type = (effect.get("arg_types") or {}).get(
+            "ModifierId") if game_mod else None
 
         top = ttk.Frame(self)
         top.pack(anchor="w", fill="x")
@@ -134,7 +172,8 @@ class RawEffectFrame(ttk.Frame):
         self.info.grid(row=1, column=1, sticky="w", padx=6)
 
         ttk.Label(self, text="Arguments").pack(anchor="w", pady=(6, 0))
-        self.args = ArgsTable(self, dialog, args)
+        self.args = ArgsTable(self, dialog, args, typed=True,
+                              arg_types=effect.get("arg_types"))
         self.args.pack(anchor="w", padx=(16, 0))
 
         # what it attaches
@@ -180,10 +219,6 @@ class RawEffectFrame(ttk.Frame):
         ttk.Entry(text_row, textvariable=self.text_var, width=60).pack(
             side="left", padx=6)
         kept = []
-        if effect.get("arg_types"):
-            kept.append("argument types ({})".format(", ".join(
-                "{}: {}".format(n, (s or {}).get("Type"))
-                for n, s in sorted(effect["arg_types"].items()))))
         if effect.get("columns"):
             kept.append(", ".join("{} {}".format(c, v) for c, v in
                                   sorted(effect["columns"].items())))
@@ -260,18 +295,24 @@ class RawEffectFrame(ttk.Frame):
         out = {"modifier_type": t, "args": self.args.values(),
                "run_once": bool(self.run_once.get()),
                "permanent": bool(self.permanent.get()),
-               "text": self.text_var.get().strip(), "attached": None}
+               "text": self.text_var.get().strip(), "attached": None,
+               "arg_types": self.args.arg_types()}
         if t and self.dialog.data.is_attach(t):
             if self.attach_mode.get() == "own" and self.attached:
                 out["attached"] = self.attached
             elif self.mod_combo.value():
                 out["args"]["ModifierId"] = self.mod_combo.value()
+                if self.modifier_id_type:       # (not shown: kept)
+                    out["arg_types"]["ModifierId"] = self.modifier_id_type
         return out
 
-    def set_from(self, modifier_type, args, run_once, permanent):
-        """Start from a template's modifier type and arguments."""
+    def set_from(self, modifier_type, args, run_once, permanent,
+                 arg_types=None):
+        """Start from a template's modifier type, arguments and their
+        types."""
         self.type_combo.var.set(modifier_type)
         self.args.clear()
+        self.args.set_types(arg_types)
         for name, value in args.items():
             self.args.add(name, value)
         self.run_once.set(bool(run_once))

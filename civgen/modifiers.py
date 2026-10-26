@@ -79,14 +79,20 @@ YIELD_ICONS = {"YIELD_FOOD": "[ICON_Food]",
 
 Arg = namedtuple("Arg", "name kind label default")
 Template = namedtuple("Template", "id category label modifier_type args "
-                                  "scope text help run_once permanent")
+                                  "scope text help run_once permanent "
+                                  "arg_types")
 
 
 def T(id, category, label, modifier_type, args, scope, text, help="",
-      run_once=False, permanent=False):
+      run_once=False, permanent=False, arg_types=None):
+    # arg_types: {name: {"Type": ...}} as in a raw effect, e.g. an amount
+    # scaled by game speed
     return Template(id, category, label, modifier_type,
                     [Arg(*a) for a in args], scope, text, help, run_once,
-                    permanent)
+                    permanent, arg_types)
+
+
+SCALED = {"Type": "ScaleByGameSpeed"}
 
 
 AMOUNT = ("Amount", "int", "Amount", "1")
@@ -241,6 +247,15 @@ TEMPLATES = [
       "MODIFIER_PLAYER_ADJUST_GOVERNOR_POINTS",
       [("Delta", "int", "Titles", "1")], "player",
       "+{Delta} Governor Titles", run_once=True, permanent=True),
+    T("grant_yield", "Empire", "Yield (one-time)",
+      "MODIFIER_PLAYER_GRANT_YIELD",
+      [("Amount", "int", "Amount", "50"), YIELD], "player",
+      "Grants {Amount} {YieldType} once (scaled by game speed)",
+      help="From an ability it is granted at the start of the game, from "
+           "a building or district when completed. In advanced mode a "
+           "'Captured city attach modifier' effect can attach it, to grant "
+           "it on capturing a city.",
+      run_once=True, permanent=True, arg_types={"Amount": SCALED}),
     # -- units
     T("combat_strength", "Units", "Combat strength",
       "MODIFIER_UNIT_ADJUST_COMBAT_STRENGTH", [AMOUNT], "unit",
@@ -684,10 +699,20 @@ def arg_display(name, value, name_of):
     return value.replace("_", " ").title()
 
 
-def _args_text(args, name_of, skip=()):
-    return ", ".join("{} {}".format(name, arg_display(name, value, name_of))
-                     for name, value in sorted(args.items())
-                     if name not in skip)
+ARG_TYPE_WORDS = {"ScaleByGameSpeed": "scaled by game speed",
+                  "LinearScaleFromDefaultHandicap": "scaled by difficulty"}
+
+
+def _args_text(args, name_of, skip=(), arg_types=None):
+    out = []
+    for name, value in sorted(args.items()):
+        if name in skip:
+            continue
+        text = "{} {}".format(name, arg_display(name, value, name_of))
+        words = ARG_TYPE_WORDS.get(((arg_types or {}).get(name) or {})
+                                   .get("Type"))
+        out.append(text + (" ({})".format(words) if words else ""))
+    return ", ".join(out)
 
 
 def summary(effect, name_of=lambda kind, t: type_display_name(t)):
@@ -729,7 +754,8 @@ def _raw_summary(effect, name_of):
     attached = effect.get("attached")
     what = readable_type(effect.get("modifier_type")) or "(no modifier type)"
     args = _args_text(effect.get("args") or {}, name_of,
-                      ("ModifierId",) if attached else ())
+                      ("ModifierId",) if attached else (),
+                      effect.get("arg_types"))
     if attached:
         return "{}{}: {}".format(what, " ({})".format(args) if args else "",
                                  summary(attached, name_of))
@@ -1033,7 +1059,8 @@ def _write_effect(w, effect, mod_id, owner, display_name, name_of):
                               "owner": set_types.get("owner")})
         return
     w.modifier(mod_id, t.modifier_type, args, t.run_once, t.permanent,
-               reqs["subject"] + reqs["units"], reqs["owner"], set_types)
+               reqs["subject"] + reqs["units"], reqs["owner"], set_types,
+               arg_types=t.arg_types)
     _preview(w, mod_id, t.modifier_type, display_name)
 
 
@@ -1150,13 +1177,15 @@ def _reqs_from_game(mod):
 def _template_for(mod, owner):
     """The template that is exactly the game's modifier mod for an owner
     kind (None: any), or None."""
-    if mod.get("arg_types") or mod.get("columns") or mod.get("strings"):
+    if mod.get("columns") or mod.get("strings"):
         return None
     args = mod["args"]
     for t in TEMPLATES.values():
         if (t.modifier_type != mod["modifier_type"] or
                 t.run_once != mod["run_once"] or
-                t.permanent != mod["permanent"]):
+                t.permanent != mod["permanent"] or
+                _plain_types(mod.get("arg_types")) !=
+                _plain_types(t.arg_types)):
             continue
         if owner and (t.scope not in OWNER_SCOPES[owner] or
                       t.scope == "unit" and owner not in ("unit",
@@ -1177,6 +1206,19 @@ def _template_for(mod, owner):
             continue
         return t
     return None
+
+
+def _plain_types(arg_types):
+    """arg_types ({name: {"Type", "Extra", "SecondExtra"}}) as comparable
+    values, without those that change nothing."""
+    out = {}
+    for name, spec in (arg_types or {}).items():
+        spec = spec or {}
+        key = (spec.get("Type") or "ARGTYPE_IDENTITY", spec.get("Extra"),
+               spec.get("SecondExtra"))
+        if key != ("ARGTYPE_IDENTITY", None, None):
+            out[name] = key
+    return out
 
 
 def effect_from_game(mod, owner=None):

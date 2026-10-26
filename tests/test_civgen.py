@@ -2398,6 +2398,57 @@ class EffectFormsTest(unittest.TestCase):
                       "'LOC_DISTRICT_SOMETHING'", sql)
         self.assertEqual(texts, [])
 
+    def test_one_time_yield_on_capture(self):
+        """Faith on capturing a city with a Holy Site, scaled by game speed
+        (as Caesar's Gold, on Hellenistic Fusion's trigger)."""
+        faith = modifiers.new_effect("grant_yield")
+        faith["args"].update(Amount="60", YieldType="YIELD_FAITH")
+        capture = dict(modifiers.new_raw_effect(
+            "MODIFIER_PLAYER_CAPTURED_CITY_ATTACH_MODIFIER"),
+            attached=faith, reqs=[{"preset": "city_district",
+                                   "value": "DISTRICT_HOLY_SITE"}])
+        modifiers.check_effect(capture, "trait", self.FakeData())
+        sql, _ = modifiers.effects_sql("trait", "TRAIT_X", [capture], "X")
+        self.assertIn("VALUES ('X_MOD_1', "
+                      "'MODIFIER_PLAYER_CAPTURED_CITY_ATTACH_MODIFIER', 0, 0, "
+                      "'X_MOD_1_SUBJECT_REQS', NULL);", sql)
+        self.assertIn("'REQUIREMENT_CITY_HAS_DISTRICT'", sql)
+        self.assertIn("VALUES ('X_MOD_1_ATTACHED', "
+                      "'MODIFIER_PLAYER_GRANT_YIELD', 1, 1, NULL, NULL);", sql)
+        self.assertIn("('X_MOD_1_ATTACHED', 'Amount', 'ScaleByGameSpeed', "
+                      "'60', NULL, NULL)", sql)
+        self.assertIn("('X_MOD_1_ATTACHED', 'YieldType', 'ARGTYPE_IDENTITY', "
+                      "'YIELD_FAITH', NULL, NULL)", sql)
+        self.assertIn("Grants 60 Faith once (scaled by game speed)",
+                      modifiers.summary(capture))
+        # a raw grant scaled by game speed says so
+        raw = dict(modifiers.new_raw_effect(
+            "MODIFIER_PLAYER_GRANT_YIELD", {"Amount": "60"}),
+            arg_types={"Amount": {"Type": "ScaleByGameSpeed"}})
+        self.assertEqual(modifiers.summary(raw),
+                         "Grant yield: Amount 60 (scaled by game speed)")
+
+    def test_scaled_game_modifier_is_the_template(self):
+        mod = {"id": "TRAIT_CAESAR_GOLD_CAPTURED_CITY_MODIFIER",
+               "modifier_type": "MODIFIER_PLAYER_GRANT_YIELD",
+               "args": {"YieldType": "YIELD_GOLD", "Amount": "300"},
+               "arg_types": {"Amount": {"Type": "ScaleByGameSpeed",
+                                        "Extra": None,
+                                        "SecondExtra": None}},
+               "run_once": True, "permanent": True, "subject_reqs": [],
+               "owner_reqs": []}
+        effect = modifiers.effect_from_game(mod, "attached")
+        self.assertEqual((effect.get("template"), effect["args"]["Amount"]),
+                         ("grant_yield", "300"))
+        # one not scaled so is not
+        mod["arg_types"] = {}
+        self.assertTrue(modifiers.is_raw(modifiers.effect_from_game(
+            mod, "attached")))
+        mod["arg_types"] = {"Amount": {"Type": "ScaleByGameSpeed",
+                                       "Extra": "1"}}
+        self.assertTrue(modifiers.is_raw(modifiers.effect_from_game(
+            mod, "attached")))
+
 
 class LeaderUniquesTest(unittest.TestCase):
     """Uniques of a leader's own (no game needed)."""
