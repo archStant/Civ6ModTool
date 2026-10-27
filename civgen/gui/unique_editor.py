@@ -6,6 +6,7 @@ from tkinter import messagebox, ttk
 
 from ..util import find_game_dir, slug_for_name
 from ..unit_art import MAX_COUNT, new_unit_art, normalize_art, unit_look
+from ..unit_classes import class_choices, class_of
 from ..unit_models import describe as describe_design
 from ..unit_models import clean_id, new_design
 from . import theme
@@ -35,7 +36,9 @@ NOTHING = "NOTHING"    # "Replaces": nothing - an extra item
 BASE_HINTS = {
     "unit": "The unit to copy: the unique unit plays like it (stats, "
             "promotions, upgrades, 3D model) apart from what you change "
-            "here, and normally replaces it for this civilization.",
+            "here, and normally replaces it for this civilization. Or "
+            "'Nothing - a new unit': pick its class below, its stats on "
+            "the Stats tab and the unit it looks like on the 3D model tab.",
     "building": "The building to copy: the unique building works like it "
                 "(district, prerequisites, yields, effects) apart from "
                 "what you change here, and normally replaces it for this "
@@ -65,6 +68,8 @@ RESOURCE_HINT = (
     "every turn. Without Gathering Storm it only needs access to its "
     "strategic resource; the amounts do nothing.")
 STAT_TIPS = {
+    "UpgradeUnit": "The unit it upgrades to. Empty: the copied unit's (a "
+                   "new unit: none). 'None': it never upgrades.",
     "StrategicResource": "The strategic resource it needs. Empty: the "
                          "copied unit's. 'None': it needs none.",
     "ResourceCost": "Gathering Storm: how much of its strategic resource "
@@ -81,9 +86,16 @@ STAT_TIPS = {
 }
 # stat columns naming a type: column -> its GameData list kind
 STAT_TYPE_KINDS = {"PrereqTech": "tech", "PrereqCivic": "civic",
-                   "PrereqDistrict": "district",
+                   "PrereqDistrict": "district", "UpgradeUnit": "unit",
                    "StrategicResource": "resource",
                    "ResourceMaintenanceType": "resource"}
+
+CLASS_TIP = ("What kind of unit it is, as the game's own unit of that class: "
+             "land, naval or air; its promotions; which combat bonuses "
+             "apply to it (e.g. anti-cavalry units' bonus against "
+             "cavalry, siege units' against districts); how the AI uses "
+             "it. Empty: the copied unit's (it keeps the copied unit's own "
+             "abilities either way).")
 
 PLACEMENT_FRAMES = {"district": PlacementFrame,
                     "improvement": ImprovementPlacementFrame}
@@ -235,29 +247,51 @@ class UniqueEditor(tk.Toplevel):
                 "others: its Builders build it as well.")).grid(
                 row=3, column=1, columnspan=2, sticky="w", **pad)
 
-        ttk.Label(body, text="Name").grid(row=4, column=0, sticky="w", **pad)
+        self.unit_class = None
+        if self.kind == "unit":
+            label = ttk.Label(body, text="Class (?)")
+            label.grid(row=4, column=0, sticky="w", **pad)
+            add_tooltip(label, CLASS_TIP)
+            class_row = ttk.Frame(body)
+            class_row.grid(row=4, column=1, columnspan=2, sticky="w", **pad)
+            # label -> preset key ("": the copied unit's class)
+            self.class_keys = {"As the unit it copies": ""}
+            self.class_keys.update((label, key)
+                                   for key, label in class_choices())
+            given = spec.get("unit_class", "")
+            self.class_var = tk.StringVar(value=next(
+                (label for label, key in self.class_keys.items()
+                 if key == given), "As the unit it copies"))
+            self.unit_class = ttk.Combobox(
+                class_row, textvariable=self.class_var, state="readonly",
+                values=list(self.class_keys), width=46)
+            self.unit_class.pack(side="left")
+            add_tooltip(self.unit_class, CLASS_TIP)
+            self.class_info = ttk.Label(class_row, foreground=theme.hint())
+            self.class_info.pack(side="left", padx=6)
+        ttk.Label(body, text="Name").grid(row=5, column=0, sticky="w", **pad)
         self.name_var = tk.StringVar(value=spec.get("name", ""))
         ttk.Entry(body, textvariable=self.name_var, width=32).grid(
-            row=4, column=1, sticky="w", **pad)
+            row=5, column=1, sticky="w", **pad)
         self.slug_label = ttk.Label(body)
-        self.slug_label.grid(row=4, column=2, sticky="w", **pad)
+        self.slug_label.grid(row=5, column=2, sticky="w", **pad)
         self.name_var.trace_add("write", lambda *_: self._refresh_slug())
-        ttk.Label(body, text="Description").grid(row=5, column=0,
+        ttk.Label(body, text="Description").grid(row=6, column=0,
                                                  sticky="nw", **pad)
         box, self.desc = icon_text(
             body, buttons=[("Write from effects", self.write_description,
                             WRITE_TIP)],
             height=5, width=64, wrap="word", undo=True)
         self.desc.insert("1.0", spec.get("desc", ""))
-        box.grid(row=5, column=1, columnspan=2, sticky="w", **pad)
+        box.grid(row=6, column=1, columnspan=2, sticky="w", **pad)
         ttk.Label(body, text="(empty: the copied item's description)",
-                  foreground=theme.hint()).grid(row=6, column=1, columnspan=2,
+                  foreground=theme.hint()).grid(row=7, column=1, columnspan=2,
                                             sticky="w", padx=6)
 
-        ttk.Label(body, text="Icon").grid(row=7, column=0, sticky="nw",
+        ttk.Label(body, text="Icon").grid(row=8, column=0, sticky="nw",
                                           **pad)
         icon_row = ttk.Frame(body)
-        icon_row.grid(row=7, column=1, columnspan=2, sticky="w", **pad)
+        icon_row.grid(row=8, column=1, columnspan=2, sticky="w", **pad)
         self.icon_path = tk.StringVar(value=spec.get("icon_path", ""))
         ImagePreview(icon_row, self.icon_path).pack(side="left")
         ttk.Entry(icon_row, textvariable=self.icon_path, width=40).pack(
@@ -267,18 +301,18 @@ class UniqueEditor(tk.Toplevel):
         ttk.Label(body, text="(empty: the copied item's icons; an image "
                              "replaces its main icon - square, transparent "
                              "background)", foreground=theme.hint()).grid(
-            row=8, column=1, columnspan=2, sticky="w", padx=6)
+            row=9, column=1, columnspan=2, sticky="w", padx=6)
         self.portrait_path = tk.StringVar(value=spec.get("portrait_path", ""))
         if self.kind == "unit":
             # the unit's portrait: in the same atlas as its icon
             label = ttk.Label(body, text="Portrait (?)")
-            label.grid(row=9, column=0, sticky="nw", **pad)
+            label.grid(row=10, column=0, sticky="nw", **pad)
             add_tooltip(label, (
                 "The picture in the unit panel and the production list. "
                 "Icon and portrait go into one icon atlas, side by side "
                 "(portrait first), like the game's own unique units."))
             portrait_row = ttk.Frame(body)
-            portrait_row.grid(row=9, column=1, columnspan=2, sticky="w",
+            portrait_row.grid(row=10, column=1, columnspan=2, sticky="w",
                               **pad)
             ImagePreview(portrait_row, self.portrait_path).pack(side="left")
             ttk.Entry(portrait_row, textvariable=self.portrait_path,
@@ -291,16 +325,15 @@ class UniqueEditor(tk.Toplevel):
                 "(square; empty: the icon image is used for the portrait "
                 "too - or, with neither, the copied unit's)"),
                 foreground=theme.hint()).grid(
-                row=10, column=1, columnspan=2, sticky="w", padx=6)
+                row=11, column=1, columnspan=2, sticky="w", padx=6)
         self._refresh_slug()
 
     def _build_stats(self, body, spec):
         pad = {"padx": 6, "pady": 3}
         ttk.Label(body, wraplength=700, justify="left", text=(
             "Leave a field empty to keep the copied item's value (shown on "
-            "the right) - for a new building or district, the game's usual "
-            "value.")).grid(row=0, column=0, columnspan=3, sticky="w",
-                                 pady=(0, 8))
+            "the right) - for a new item, the game's usual value.")).grid(
+            row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
         given = spec.get("stats") or {}
         self.stat_getters, self.base_labels = {}, {}
         self.stat_vars = {}             # column -> its StringVar
@@ -331,6 +364,11 @@ class UniqueEditor(tk.Toplevel):
                     tip = ("The district the building is built in. Empty: "
                            "the copied building's (a new building needs "
                            "one).")
+                elif kind == "unit":    # (its upgrade) its own first
+                    choices = [(NO_PREREQ, "None - no upgrade")] + list(
+                        self.civ_types("unit")) + list(
+                        self.app.data.type_choices(kind))
+                    tip = STAT_TIPS[column]
                 elif kind == "resource":
                     choices = [(NO_PREREQ, "None - no resource")] + list(
                         self.app.data.type_choices("strategic_resource"))
@@ -718,7 +756,8 @@ class UniqueEditor(tk.Toplevel):
         unit = self._look_unit()
         look = unit_look(find_game_dir(), unit) if unit else None
         if not unit:
-            text = "(pick the unit it copies on the General tab)"
+            text = ("(pick the unit it copies on the General tab - or, for "
+                    "a new unit, the unit it looks like here)")
         elif look is None:
             text = "{}: no 3D model found in the game's art.".format(unit)
         else:
@@ -815,6 +854,11 @@ class UniqueEditor(tk.Toplevel):
             district = (row or {}).get("PrereqDistrict") or ""
         return district
 
+    def _unit_class(self):
+        if self.unit_class is None:
+            return ""
+        return self.class_keys.get(self.class_var.get(), "")
+
     def _replaces_value(self):
         if self.replaces is None:
             return ""
@@ -829,7 +873,12 @@ class UniqueEditor(tk.Toplevel):
         row = data.item(self.kind, base)
         if hasattr(self, "replaces"):
             self._refresh_replaces()
-        if not base and self.kind in CAN_BE_NEW:
+        if not base and self.kind == "unit":
+            self.base_info.configure(text=(
+                "A new unit: it starts from the game's usual values - pick "
+                "its class below, its stats on the Stats tab and the unit it "
+                "looks like on the 3D model tab."))
+        elif not base and self.kind in CAN_BE_NEW:
             self.base_info.configure(text=(
                 "A new {}: it starts from the game's usual values - set its "
                 "{} on the Stats tab, its look on the 3D model tab.".format(
@@ -851,6 +900,11 @@ class UniqueEditor(tk.Toplevel):
             self.base_info.configure(text="" if data.conn else
                                      "(load the game cache to list the "
                                      "game's items and their stats)")
+        if getattr(self, "unit_class", None) is not None:
+            self.class_info.configure(
+                text="(a new unit needs one)" if not base else
+                "copied: {}".format(class_of(row) or (row or {}).get(
+                    "PromotionClass") or "unknown") if row else "")
         for column, label in getattr(self, "base_labels", {}).items():
             if row and column not in row:   # (Gathering Storm's)
                 label.configure(text="copied: unknown (the loaded game data "
@@ -874,6 +928,7 @@ class UniqueEditor(tk.Toplevel):
     def write_description(self):
         spec = {"kind": self.kind, "base": self._base(),
                 "replaces": self._replaces_value(),
+                "unit_class": self._unit_class(),
                 "stats": {c: get() for c, get in self.stat_getters.items()
                           if str(get()).strip()},
                 "effects": self.effects.effects()}
@@ -902,6 +957,7 @@ class UniqueEditor(tk.Toplevel):
             "icon_path": self.icon_path.get().strip(),
             "skip_effects": self.skipped_effects(),
             "portrait_path": self.portrait_path.get().strip(),
+            "unit_class": self._unit_class(),
         }
         spec["art"] = self.model_spec() if self.kind == "unit" \
             else self.landmark_frame.art()
@@ -935,5 +991,16 @@ class UniqueEditor(tk.Toplevel):
             messagebox.showwarning("Missing item", "Pick the {} to copy."
                                    .format(self.kind), parent=self)
             return
+        if self.kind == "unit" and not spec["base"]:
+            if not spec["unit_class"]:
+                messagebox.showwarning("Missing class", "Pick the class of "
+                                       "the new unit (General tab).",
+                                       parent=self)
+                return
+            if not spec["art"]["look_from"]:
+                messagebox.showwarning("Missing look", "Pick the unit the "
+                                       "new unit looks like (3D model tab).",
+                                       parent=self)
+                return
         self.result = spec
         self.destroy()

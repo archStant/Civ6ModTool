@@ -571,6 +571,13 @@ class GameData:
                     rows[unique]["replaces"] = base
             if kind in ITEM_XP2_COLUMNS:
                 self._load_xp2_columns(kind, rows)
+            if kind == "unit":          # what it upgrades to (None: nothing)
+                for row in rows.values():
+                    row["UpgradeUnit"] = None
+                for unit, upgrade in self._query(
+                        "SELECT Unit, UpgradeUnit FROM UnitUpgrades"):
+                    if unit in rows:
+                        rows[unit]["UpgradeUnit"] = upgrade
             self.items[kind] = rows
 
     def _load_modifier_schema(self):

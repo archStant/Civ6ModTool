@@ -31,6 +31,7 @@ from .uniques import unique_icons_sql, unique_sql, unique_text_rows
 from .unit_art import describe as describe_unit_art
 from .unit_art import is_custom as is_custom_art
 from .unit_art import unique_unit_art
+from .unit_classes import class_label
 from .landmarks import (LANDMARKS_ARTDEF, building_districts,
                         building_landmark_parts, district_landmark,
                         landmark_buildings, landmark_xml, merged_landmark,
@@ -469,8 +470,10 @@ def readme_unique(u):
         "a copy of " + u["base"] if u["base"] else
         "new" + (" (in {})".format(u["district"]) if u["district"]
                  else ""),
-        ", replacing " + u["replaced"] if u["replaced"] else
-        ", replacing nothing",
+        (", replacing " + u["replaced"] if u["replaced"] else
+         ", replacing nothing") +
+        (", class " + class_label(u["unit_class"])
+         if u.get("unit_class") else ""),
         "; 3D model: " + describe_unit_art(u["art"])
         if is_custom_art(u.get("art")) else "")
 
