@@ -540,11 +540,13 @@ def fitted_portrait(path):
     return _cached(("portrait",), path, lambda: fit_portrait(path))
 
 
-def preview_image(path, box, mask_path=None, portrait=False, hue=0):
-    """The image at path fitted into box (w, h) and centred on a dark
-    backdrop of that size, so transparency shows. With mask_path the image
-    is faded out with that mask first (cropped to the mask's aspect, like
-    the generated texture). portrait: show path fitted like a loading
+def preview_image(path, box, mask_path=None, portrait=False, hue=0,
+                  backdrop=PREVIEW_BACKDROP):
+    """The image at path fitted into box (w, h) and centred on a backdrop
+    (RGBA) of that size, dark by default so transparency shows. With
+    mask_path the image is faded out with that mask first (cropped to the
+    mask's aspect, like the generated texture). portrait: show path fitted
+    like a loading
     portrait (fit_portrait). Returns an RGBA image or None if path is not
     a file. hue: turn the colors by that many degrees (see shift_hue).
     Raises ImportError without Pillow."""
@@ -569,12 +571,12 @@ def preview_image(path, box, mask_path=None, portrait=False, hue=0):
             img.thumbnail(box, Image.LANCZOS)
         if hue:
             img = shift_hue(img, hue)
-        out = Image.new("RGBA", tuple(box), PREVIEW_BACKDROP)
+        out = Image.new("RGBA", tuple(box), backdrop)
         out.alpha_composite(img, ((box[0] - img.width) // 2,
                                   (box[1] - img.height) // 2))
         return out
-    return _cached(("preview", tuple(box), mask_path, portrait, hue), path,
-                   make)
+    return _cached(("preview", tuple(box), mask_path, portrait, hue,
+                    tuple(backdrop)), path, make)
 
 
 def placeholder_icon(name, primary, secondary, size):
