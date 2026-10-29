@@ -9,17 +9,18 @@ its civilization, like the game's own uniques. Its 3D art is the base
 item's (a renamed copy of its art definition), and its icons are the base
 item's unless a custom icon is given.
 
-Buildings, districts and improvements can also be new (no base): a
-building built in the district of its choice, a district laid out like
-another one, an improvement that looks like another; they start from the
-game's usual values (see NEW_ROWS). Buildings and districts may replace
+Every kind can also be new (no base): a unit of the class of its choice
+that looks like another unit, a building built in the district of its
+choice, a district laid out like another one, an improvement that looks
+like another; they start from the game's usual values (see NEW_ROWS).
+Units may replace any unit, or nothing. Buildings and districts may replace
 any item of their kind, or nothing; improvements never replace anything
 (the game has no table for it): Builders of the civilization can build
 them as well as the usual improvements.
 
 A unique spec is a plain picklable dict:
     kind ("unit" / "building" / "district" / "improvement"), base (type
-    to copy, "" = a new building / district / improvement), replaces (True = what the base item
+    to copy, "" = a new item), replaces (True = what the base item
     replaces, else the base item itself; "" / False = nothing - an extra
     item; or a type), name, desc, pedia (Civilopedia text; paragraphs
     separated by a blank line), stats ({column: value}, empty value =
@@ -34,7 +35,9 @@ A unique spec is a plain picklable dict:
     item's icons), art (units: the 3D model, see unit_art.py; its look
     unit's icons are used; buildings and districts: see landmarks.py;
     improvements: {"look_from": the improvement it looks like, "" = the
-    base improvement})
+    base improvement}), unit_class (units: a key of
+    unit_classes.UNIT_CLASSES - land / naval / air, melee / ranged /
+    siege / cavalry...; "" = the copied unit's; a new unit needs one)
 """
 
 import os
@@ -45,6 +48,8 @@ from .texts import history_paragraphs, loc_text
 from .artdefs import (BUILDINGS_ARTDEF, DISTRICTS_ARTDEF,
                       IMPROVEMENTS_ARTDEF, UNITS_ARTDEF)
 from .unit_art import new_unit_art, normalize_art
+from .unit_classes import (NEED_WORDS, ROLE_TAGS, UNIT_CLASSES, class_label,
+                           normalize_unit_class)
 from .landmarks import (new_building_art, new_district_art,
                         normalize_building_art, normalize_district_art)
 
@@ -162,6 +167,7 @@ STATS = {
              ("BaseSightRange", "Sight", "int"),
              ("PrereqTech", "Required technology", "tech"),
              ("PrereqCivic", "Required civic", "civic"),
+             ("UpgradeUnit", "Upgrades to", "unit"),
              ("StrategicResource", "Strategic resource", "resource"),
              ("ResourceCost", "Strategic resource cost", "int"),
              ("ResourceMaintenanceType", "Upkeep resource", "resource"),
@@ -194,6 +200,9 @@ STATS = {
 # to the file that only loads then.
 GS_STATS = {"unit": ("Units_XP2", ("ResourceCost", "ResourceMaintenanceType",
                                    "ResourceMaintenanceAmount"))}
+# Stats in a table of their own: column -> (table, type column). A
+# unit's upgrade (none: it never upgrades).
+OTHER_TABLE_STATS = {"UpgradeUnit": ("UnitUpgrades", "Unit")}
 # A unit's strategic resources: (resource column, amount column, "" or
 # " per turn"). Without Gathering Storm the unit only needs access to its
 # strategic resource; the amounts are Gathering Storm's.
@@ -232,6 +241,9 @@ PEDIA_PAGES = {"unit": "UNITS", "building": "BUILDINGS",
 # the game's usual values (a district like the Campus); the stats change
 # them. The other columns keep their schema defaults.
 NEW_ROWS = {
+    # (units: their class gives the rest, see unit_classes.py)
+    "unit": [("Cost", "100"), ("BaseMoves", "2"), ("BaseSightRange", "2"),
+             ("Maintenance", "1"), ("PurchaseYield", "'YIELD_GOLD'")],
     "building": [("Cost", "100"), ("PurchaseYield", "'YIELD_GOLD'")],
     "district": [("Cost", "54"), ("RequiresPlacement", "1"),
                  ("RequiresPopulation", "1"), ("NoAdjacentCity", "0"),
@@ -247,7 +259,7 @@ NEW_ROWS = {
     "improvement": [("Buildable", "1"), ("PlunderType", "'PLUNDER_HEAL'"),
                     ("PlunderAmount", "50")],
 }
-CAN_BE_NEW = ("building", "district", "improvement")
+CAN_BE_NEW = ("unit", "building", "district", "improvement")
 
 # Where a district can be built (its placement spec; None = the copied
 # district's rules):
@@ -401,7 +413,7 @@ def new_unique_spec(kind="unit"):
     spec = {"kind": kind, "base": "", "replaces": True, "name": "",
             "desc": "", "pedia": "", "stats": {}, "yields": None,
             "gpp": None, "adjacencies": True, "effects": [],
-            "icon_path": "", "portrait_path": ""}
+            "icon_path": "", "portrait_path": "", "unit_class": ""}
     spec["art"] = {"unit": new_unit_art, "building": new_building_art,
                    "district": new_district_art,
                    "improvement": new_improvement_art}[kind]()
@@ -444,12 +456,12 @@ def normalize_unique(spec, civ, data, prefix=""):
                 raise ValueError("{}: {} must be a whole number.".format(
                     label, stat_label.lower()))
         elif value.upper() == NO_PREREQ and stat_kind in ("tech", "civic",
-                                                          "resource"):
+                                                          "resource", "unit"):
             value = None                # explicitly none (SQL NULL)
         else:
             value = value.upper()
             prefix = {"tech": "TECH_", "civic": "CIVIC_",
-                      "district": "DISTRICT_",
+                      "district": "DISTRICT_", "unit": "UNIT_",
                       "resource": "RESOURCE_"}.get(stat_kind)
             if prefix and not value.startswith(prefix):
                 raise ValueError("{}: {} must be a {} type{}.".format(
@@ -539,6 +551,28 @@ def normalize_unique(spec, civ, data, prefix=""):
     if kind == "district" and not base and not art.get("look_from"):
         raise ValueError("{}: pick the district a new district looks like "
                          "(3D model tab).".format(label))
+    unit_class = normalize_unit_class(spec.get("unit_class"), label) \
+        if kind == "unit" else ""
+    if kind == "unit" and not base:
+        if not unit_class:
+            raise ValueError("{}: pick the class of a new unit (General "
+                             "tab).".format(label))
+        if not art.get("look_from"):
+            raise ValueError("{}: pick the unit a new unit looks like (3D "
+                             "model tab).".format(label))
+    if unit_class:
+        # the stats its class cannot do without: its own, else the copied
+        # unit's (unknown without the game data), else none
+        missing = []
+        for column in UNIT_CLASSES[unit_class]["needs"]:
+            value = stats[column] if column in stats else \
+                base_row.get(column) if base_row else None if base else 0
+            if value is not None and value <= 0:
+                missing.append(NEED_WORDS[column])
+        if missing:
+            raise ValueError("{}: a {} unit needs a {} (Stats tab).".format(
+                label, class_label(unit_class).lower(),
+                " and ".join(missing)))
     check_effects(spec.get("effects"), kind, data, label)
     # the game item its art definition and icons start from
     model_from = base or art.get("look_from") or replaced
@@ -553,6 +587,8 @@ def normalize_unique(spec, civ, data, prefix=""):
         # buildings: the district it is built in (None: unknown)
         "district": district,
         "placement": placement,
+        # units: its class (see unit_classes.py; "" = the copied unit's)
+        "unit_class": unit_class,
         "model_from": model_from,
         "desc": (spec.get("desc") or "").strip(),
         "pedia": (spec.get("pedia") or "").strip(),
@@ -627,9 +663,13 @@ def unique_sql(u, name_of):
         del updates[1]
     gs_table, gs_columns = GS_STATS.get(kind, (None, ()))
     updates += [(c, _stat_value(v)) for c, v in sorted(u["stats"].items())
-                if c not in gs_columns]
+                if c not in gs_columns and c not in OTHER_TABLE_STATS]
     gs_updates = [(c, _stat_value(v)) for c, v in sorted(u["stats"].items())
                   if c in gs_columns]
+    unit_class = UNIT_CLASSES.get(u.get("unit_class"))
+    if unit_class:                      # every column of its class
+        updates += [(c, _stat_value(v))
+                    for c, v in unit_class["columns"].items()]
     if kind == "improvement":
         # its own icon (copied from the one it looks like, or custom)
         updates.append(("Icon", sql_str(u["icon_name"])))
@@ -665,14 +705,6 @@ VALUES ({owner}, {trait});
             (xp2 if gs else out).append(
                 clone_rows(clone_table, clone_column, base, slug,
                            where=where))
-        if gs_updates:
-            # (the copied item may have no row there: one with the
-            # table's defaults first)
-            xp2.append("INSERT OR IGNORE INTO {t} ({c}) VALUES ({s});\n"
-                       "UPDATE {t} SET {sets} WHERE {c} = {s};\n".format(
-                           t=gs_table, c=column, s=sql_str(slug),
-                           sets=", ".join("{} = {}".format(c, v)
-                                          for c, v in gs_updates)))
     else:                               # new: the usual values, then stats
         columns = [(column, sql_str(slug))] + updates
         given = {c for c, _ in columns}
@@ -680,6 +712,25 @@ VALUES ({owner}, {trait});
         out.append("INSERT INTO {} ({}) VALUES ({});\n".format(
             table, ", ".join(c for c, _ in columns),
             ", ".join(v for _, v in columns)))
+    if gs_updates:
+        # (the item may have no row there: one with the table's defaults
+        # first)
+        xp2.append("INSERT OR IGNORE INTO {t} ({c}) VALUES ({s});\n"
+                   "UPDATE {t} SET {sets} WHERE {c} = {s};\n".format(
+                       t=gs_table, c=column, s=sql_str(slug),
+                       sets=", ".join("{} = {}".format(c, v)
+                                      for c, v in gs_updates)))
+    if unit_class:
+        out.append(unit_class_sql(slug, unit_class, bool(base)))
+    for stat, (other, other_column) in OTHER_TABLE_STATS.items():
+        if stat not in u["stats"]:
+            continue                    # the copied item's
+        out.append("DELETE FROM {} WHERE {} = {};\n".format(
+            other, other_column, sql_str(slug)))
+        if u["stats"][stat] is not None:
+            out.append("INSERT INTO {} ({}, {}) VALUES ({}, {});\n".format(
+                other, other_column, stat, sql_str(slug),
+                sql_str(u["stats"][stat])))
     if kind == "improvement" and not base:
         # built by Builders; tourism from its culture after Flight, like
         # the game's own unique improvements
@@ -720,6 +771,25 @@ VALUES ({owner}, {trait});
                                  name_of)
     out.append(effects)
     return "".join(out), "".join(xp2), texts
+
+
+def unit_class_sql(slug, unit_class, copied):
+    """SQL giving a unit the class tags and AI types of its class (a
+    unit_classes preset); copied: those of the copied unit's class go
+    first (its own tags stay)."""
+    s = sql_str(slug)
+    out = ["-- its class\n"]
+    if copied:
+        out.append("DELETE FROM TypeTags WHERE Type = {} AND Tag IN ({});\n"
+                   "DELETE FROM UnitAiInfos WHERE UnitType = {};\n".format(
+                       s, ", ".join(map(sql_str, ROLE_TAGS)), s))
+    for table, columns, values in (
+            ("TypeTags", "Type, Tag", unit_class["tags"]),
+            ("UnitAiInfos", "UnitType, AiType", unit_class["ai"])):
+        out.append("INSERT INTO {} ({}) VALUES\n{};\n".format(
+            table, columns, ",\n".join("({}, {})".format(s, sql_str(v))
+                                       for v in values)))
+    return "".join(out)
 
 
 def unique_text_rows(u):
@@ -805,6 +875,8 @@ def describe_unique(spec, data, name_of=None):
                   else str(replaces))
         if replaced:
             lines.append("Replaces the {}.".format(name_of(kind, replaced)))
+    if kind == "unit" and spec.get("unit_class") in UNIT_CLASSES:
+        lines.append("{} unit.".format(class_label(spec["unit_class"])))
     stats = spec.get("stats") or {}
     district = stats.get("PrereqDistrict")
     if kind == "building" and district and district != (row or {}).get(

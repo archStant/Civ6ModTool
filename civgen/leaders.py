@@ -1,5 +1,6 @@
 """Leader specs: validation and their mod file fragments."""
 
+import colorsys
 import os
 import re
 
@@ -1034,31 +1035,59 @@ def inherited_text_sql(c):
     return out
 
 
+def _luma(rgb):
+    return (0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]) / 255
+
+
+def _hls_rgb(h, l, s):
+    return tuple(int(round(v * 255)) for v in colorsys.hls_to_rgb(h % 1, l, s))
+
+
+def _contrast_partner(rgb, hue):
+    """A near-white or near-black (tinted with hue) that reads on rgb."""
+    return _hls_rgb(hue, 0.12 if _luma(rgb) > 0.5 else 0.9, 0.35)
+
+
+def color_schemes(primary, secondary):
+    """The leader's scheme plus three distinct alternates, as
+    [(primary rgb, secondary rgb)] * 4. The game falls back to the
+    alternates when another player already uses a similar color."""
+    h, l, s = colorsys.rgb_to_hls(*(v / 255 for v in primary))
+    sh = colorsys.rgb_to_hls(*(v / 255 for v in secondary))[0]
+    # alt 1: colors swapped
+    alt1 = (tuple(secondary), tuple(primary))
+    # alt 2: a clearly lighter or darker shade of the primary hue
+    shade = _hls_rgb(h, 0.22 if l > 0.45 else 0.72, max(s, 0.45))
+    alt2 = (shade, _contrast_partner(shade, sh))
+    # alt 3: the complementary hue, keeping the secondary when it reads
+    comp = _hls_rgb(h + 0.5, min(max(l, 0.3), 0.6), max(s, 0.55))
+    comp_sec = tuple(secondary) \
+        if abs(_luma(comp) - _luma(secondary)) > 0.3 \
+        else _contrast_partner(comp, sh)
+    alt3 = (comp, comp_sec)
+    return [(tuple(primary), tuple(secondary)), alt1, alt2, alt3]
+
+
 def colors_fragment(c):
     """(color rows XML, playercolors row XML) for one leader."""
-    p, s = c["primary"], c["secondary"]
-    entries = [("PRIMARY", 255), ("PRIMARY1", 125), ("PRIMARY2", 200),
-               ("PRIMARY3", 175)]
+    schemes = color_schemes(c["primary"], c["secondary"])
+    suffixes = ["", "1", "2", "3"]
     color_rows = "\n".join(
-        "    <Row><Type>COLOR_PLAYER_{slug}_{key}</Type>"
-        "<Color>{r},{g},{b},{a}</Color></Row>".format(
-            slug=c["slug"], key=key, r=p[0], g=p[1], b=p[2], a=a)
-        for key, a in entries)
-    color_rows += "\n    <Row><Type>COLOR_PLAYER_{slug}_SECONDARY</Type>" \
-                  "<Color>{r},{g},{b},255</Color></Row>".format(
-                      slug=c["slug"], r=s[0], g=s[1], b=s[2])
+        "    <Row><Type>COLOR_PLAYER_{slug}_{key}{n}</Type>"
+        "<Color>{r},{g},{b},255</Color></Row>".format(
+            slug=c["slug"], key=key, n=n, r=rgb[0], g=rgb[1], b=rgb[2])
+        for n, scheme in zip(suffixes, schemes)
+        for key, rgb in zip(("PRIMARY", "SECONDARY"), scheme))
+    alt_rows = "".join("""
+      <Alt{n}PrimaryColor>COLOR_PLAYER_{slug}_PRIMARY{n}</Alt{n}PrimaryColor>
+      <Alt{n}SecondaryColor>COLOR_PLAYER_{slug}_SECONDARY{n}</Alt{n}SecondaryColor>"""
+                       .format(slug=c["slug"], n=n) for n in suffixes[1:])
     player_row = """    <Row>
       <Type>{slug}</Type>
       <Usage>Unique</Usage>
       <PrimaryColor>COLOR_PLAYER_{slug}_PRIMARY</PrimaryColor>
-      <SecondaryColor>COLOR_PLAYER_{slug}_SECONDARY</SecondaryColor>
-      <Alt1PrimaryColor>COLOR_PLAYER_{slug}_PRIMARY1</Alt1PrimaryColor>
-      <Alt1SecondaryColor>COLOR_PLAYER_{slug}_SECONDARY</Alt1SecondaryColor>
-      <Alt2PrimaryColor>COLOR_PLAYER_{slug}_PRIMARY2</Alt2PrimaryColor>
-      <Alt2SecondaryColor>COLOR_PLAYER_{slug}_SECONDARY</Alt2SecondaryColor>
-      <Alt3PrimaryColor>COLOR_PLAYER_{slug}_PRIMARY3</Alt3PrimaryColor>
-      <Alt3SecondaryColor>COLOR_PLAYER_{slug}_SECONDARY</Alt3SecondaryColor>
-    </Row>""".format(slug=c["slug"])
+      <SecondaryColor>COLOR_PLAYER_{slug}_SECONDARY</SecondaryColor>{alts}
+    </Row>""".format(slug=c["slug"], alts=alt_rows)
     return color_rows, player_row
 
 

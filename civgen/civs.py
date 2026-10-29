@@ -302,7 +302,8 @@ VALUES ({slug}, {name_tag}, {desc_tag}, {adj_tag},
 
 
 def sql_header(u):
-    return "-- {}: Gathering Storm rows of {}\n".format(u["label"], u["base"])
+    return "-- {}: Gathering Storm rows of {}\n".format(
+        u["label"], u["base"] or u["slug"])
 
 
 def civ_text_rows(civ):

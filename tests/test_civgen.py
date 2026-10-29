@@ -1120,8 +1120,30 @@ class NewItemTest(unittest.TestCase):
         self.assertNotIn("CivGenClone", sql)
         with self.assertRaises(ValueError):      # no look
             self.normalize(kind="district", base="")
-        with self.assertRaises(ValueError):      # units are always copies
-            self.normalize(kind="unit", base="")
+        siege = {"Combat": "25", "Bombard": "35", "Range": "2"}
+        with self.assertRaises(ValueError):      # no class
+            self.normalize(kind="unit", base="", stats=siege,
+                           art={"look_from": "UNIT_CATAPULT"})
+        with self.assertRaises(ValueError):      # no look
+            self.normalize(kind="unit", base="", stats=siege,
+                           unit_class="siege")
+        with self.assertRaises(ValueError):      # a siege unit needs bombard
+            self.normalize(kind="unit", base="", unit_class="siege",
+                           stats={"Combat": "25", "Range": "2"},
+                           art={"look_from": "UNIT_CATAPULT"})
+        u = self.normalize(kind="unit", base="", unit_class="siege",
+                           stats=siege, art={"look_from": "UNIT_CATAPULT"})
+        self.assertTrue(u["new"])
+        self.assertIsNone(u["replaced"])
+        self.assertEqual(u["icon_from"], "UNIT_CATAPULT")
+        sql = uniques.unique_sql(u, lambda kind, t: t)[0]
+        self.assertIn("INSERT INTO Units (UnitType", sql)
+        self.assertNotIn("CivGenClone", sql)
+        for value in ("'DOMAIN_LAND'", "'PROMOTION_CLASS_SIEGE'",
+                      "('UNIT_Y', 'CLASS_SIEGE')",
+                      "('UNIT_Y', 'UNITTYPE_SIEGE')"):
+            self.assertIn(value, sql)
+        self.assertNotIn("DELETE FROM TypeTags", sql)   # nothing copied
 
 
 class PrereqTest(unittest.TestCase):
@@ -1236,6 +1258,149 @@ class StrategicResourceTest(unittest.TestCase):
                       "turn.", text)
 
 
+class UnitClassTest(unittest.TestCase):
+    """A unique unit's class (unit_classes.py): of a new unit, or changed
+    on a copy; and its upgrade."""
+
+    class NoData:
+        conn = None
+
+    civ = {"name": "X", "slug": "CIVILIZATION_X"}
+
+    def normalize(self, base, data=None, **spec):
+        u = uniques.new_unique_spec("unit")
+        u.update(base=base, name=spec.pop("name", "Y"), **spec)
+        return uniques.normalize_unique(u, self.civ, data or self.NoData(),
+                                        "TST")
+
+    def test_presets(self):
+        from civgen.unit_classes import LAND_COLUMNS, ROLE_TAGS, UNIT_CLASSES
+        for key, preset in UNIT_CLASSES.items():
+            # every class column, so a copy loses its old class's
+            self.assertEqual(set(preset["columns"]), set(LAND_COLUMNS), key)
+            self.assertTrue(set(preset["tags"]) <= set(ROLE_TAGS))
+            self.assertIn("Combat", preset["needs"])
+        with self.assertRaises(ValueError):
+            self.normalize("UNIT_GALLEY", unit_class="pirate")
+
+    def test_copy_changes_class(self):
+        u = self.normalize("UNIT_GALLEY", unit_class="naval_raider",
+                           stats={"RangedCombat": "40", "Range": "2"})
+        sql = uniques.unique_sql(u, lambda kind, t: t)[0]
+        self.assertIn("PromotionClass = 'PROMOTION_CLASS_NAVAL_RAIDER'", sql)
+        self.assertIn("Domain = 'DOMAIN_SEA'", sql)
+        delete = sql.index("DELETE FROM TypeTags WHERE Type = 'UNIT_TST_Y' "
+                           "AND Tag IN (")
+        # after the copied tags (its own, e.g. a unique ability's, stay)
+        self.assertLess(sql.index("INSERT INTO TypeTags SELECT"), delete)
+        self.assertLess(delete, sql.index(
+            "('UNIT_TST_Y', 'CLASS_NAVAL_RAIDER')"))
+        self.assertIn("DELETE FROM UnitAiInfos WHERE UnitType = "
+                      "'UNIT_TST_Y';", sql)
+        self.assertIn("('UNIT_TST_Y', 'UNITTYPE_NAVAL')", sql)
+        # an aircraft made a melee unit is no longer one
+        sql = uniques.unique_sql(self.normalize(
+            "UNIT_BIPLANE", unit_class="melee"), lambda kind, t: t)[0]
+        for value in ("Stackable = 0", "PrereqDistrict = NULL",
+                      "IgnoreMoves = 0", "Domain = 'DOMAIN_LAND'"):
+            self.assertIn(value, sql)
+        self.assertIn("Light cavalry unit.", uniques.describe_unique(
+            {"kind": "unit", "base": "UNIT_GALLEY",
+             "unit_class": "light_cavalry"}, self.NoData(),
+            lambda kind, t: t))
+
+    def test_upgrade(self):
+        sql = uniques.unique_sql(self.normalize(
+            "UNIT_WARRIOR", stats={"UpgradeUnit": "unit_horseman"}),
+            lambda kind, t: t)[0]
+        self.assertNotIn("UpgradeUnit = ", sql)      # not a Units column
+        self.assertIn("DELETE FROM UnitUpgrades WHERE Unit = 'UNIT_TST_Y';",
+                      sql)
+        self.assertIn("INSERT INTO UnitUpgrades (Unit, UpgradeUnit) VALUES "
+                      "('UNIT_TST_Y', 'UNIT_HORSEMAN');", sql)
+        sql = uniques.unique_sql(self.normalize(
+            "UNIT_WARRIOR", stats={"UpgradeUnit": "none"}),
+            lambda kind, t: t)[0]
+        self.assertIn("DELETE FROM UnitUpgrades", sql)
+        self.assertNotIn("INSERT INTO UnitUpgrades (Unit", sql)
+        sql = uniques.unique_sql(self.normalize("UNIT_WARRIOR"),
+                                 lambda kind, t: t)[0]
+        self.assertNotIn("DELETE FROM UnitUpgrades", sql)   # the copied one
+        with self.assertRaises(ValueError):
+            self.normalize("UNIT_WARRIOR",
+                           stats={"UpgradeUnit": "BUILDING_X"})
+
+    @unittest.skipUnless(CACHE, "needs the game cache")
+    def test_presets_are_the_games(self):
+        from civgen.unit_classes import ROLE_TAGS, UNIT_CLASSES
+        data = game_data()
+        self.assertEqual(data.item("unit", "UNIT_WARRIOR")["UpgradeUnit"],
+                         "UNIT_SWORDSMAN")
+        for key, preset in UNIT_CLASSES.items():
+            unit = preset["unit"]
+            row = data.item("unit", unit)
+            if not row:                 # (a DLC's unit)
+                continue
+            self.assertEqual({c: row[c] for c in preset["columns"]},
+                             preset["columns"], key)
+            tags = {t for (t,) in data._query(
+                "SELECT Tag FROM TypeTags WHERE Type = ?", (unit,))}
+            self.assertEqual(tags & set(ROLE_TAGS), set(preset["tags"]), key)
+            ai = {t for (t,) in data._query(
+                "SELECT AiType FROM UnitAiInfos WHERE UnitType = ?", (unit,))}
+            self.assertEqual(ai, set(preset["ai"]), key)
+        # the copied unit's needed stats count
+        with self.assertRaises(ValueError):     # the Warrior has no range
+            self.normalize("UNIT_WARRIOR", data, unit_class="ranged")
+        self.normalize("UNIT_WARRIOR", data, unit_class="ranged",
+                       stats={"RangedCombat": "20", "Range": "2"})
+
+    @unittest.skipUnless(CACHE, "needs the game cache")
+    def test_in_the_game_database(self):
+        data = game_data()
+        units = [
+            self.normalize("", data, name="New", unit_class="siege",
+                           replaces="",
+                           stats={"Combat": "25", "Bombard": "35",
+                                  "Range": "2", "UpgradeUnit": "UNIT_BOMBARD",
+                                  "PrereqTech": "TECH_ENGINEERING"},
+                           art={"look_from": "UNIT_CATAPULT"}),
+            self.normalize("UNIT_GALLEY", data, name="Raider",
+                           unit_class="naval_raider",
+                           stats={"RangedCombat": "30", "Range": "1"}),
+            self.normalize("UNIT_BIPLANE", data, name="Lancer",
+                           unit_class="heavy_cavalry", replaces="")]
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        db = database("DebugGameplay.sqlite", tmp)
+        self.addCleanup(db.close)
+        db.executescript(
+            "INSERT INTO Types (Type, Kind) VALUES ('CIVILIZATION_X', "
+            "'KIND_CIVILIZATION');"
+            "INSERT INTO Civilizations (CivilizationType, Name, Description,"
+            " Adjective, StartingCivilizationLevelType) VALUES "
+            "('CIVILIZATION_X', 'X', 'X', 'X', 'CIVILIZATION_LEVEL_FULL_CIV');"
+            + "".join("".join(uniques.unique_sql(u, data.type_name)[:2])
+                      for u in units))
+        self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
+        self.assertEqual(db.execute(
+            "SELECT Domain, PromotionClass, Bombard, PrereqTech FROM Units "
+            "WHERE UnitType = 'UNIT_TST_NEW'").fetchall(),
+            [("DOMAIN_LAND", "PROMOTION_CLASS_SIEGE", 35, "TECH_ENGINEERING")])
+        self.assertEqual(db.execute(
+            "SELECT UpgradeUnit FROM UnitUpgrades WHERE Unit = "
+            "'UNIT_TST_NEW'").fetchall(), [("UNIT_BOMBARD",)])
+        self.assertEqual(sorted(t for (t,) in db.execute(
+            "SELECT Tag FROM TypeTags WHERE Type = 'UNIT_TST_LANCER'")),
+            ["CLASS_HEAVY_CAVALRY"])
+        self.assertEqual(db.execute(
+            "SELECT Domain, Stackable, PrereqDistrict FROM Units WHERE "
+            "UnitType = 'UNIT_TST_LANCER'").fetchall(),
+            [("DOMAIN_LAND", 0, None)])
+        self.assertIn("CLASS_NAVAL_RAIDER", [t for (t,) in db.execute(
+            "SELECT Tag FROM TypeTags WHERE Type = 'UNIT_TST_RAIDER'")])
+
+
 class UnitArtTest(unittest.TestCase):
 
     def test_normalize(self):
@@ -1280,6 +1445,17 @@ class LeaderOnlyTest(unittest.TestCase):
         modinfo = modbuild.build_modinfo("M", "d", "g", True, None, ["a"])
         self.assertIn("<ActionCriteria/>", modinfo)
         self.assertNotIn(modbuild.ICONS_SQL_FILE, modinfo)
+
+    def test_modinfo_text_newlines_use_game_token(self):
+        root = ET.fromstring(modbuild.build_modinfo(
+            "First\nSecond", "First\r\nSecond", "g", False, None, [],
+            authors="First\rSecond"))
+        properties = root.find("Properties")
+        self.assertEqual(properties.findtext("Name"), "First[NEWLINE]Second")
+        self.assertEqual(properties.findtext("Description"),
+                         "First[NEWLINE]Second")
+        self.assertEqual(properties.findtext("Authors"),
+                         "First[NEWLINE]Second")
 
     def test_custom_files_checked(self):
         tmp = tempfile.mkdtemp()
@@ -2386,6 +2562,57 @@ class EffectFormsTest(unittest.TestCase):
         self.assertIn("'Description', 'ARGTYPE_IDENTITY', "
                       "'LOC_DISTRICT_SOMETHING'", sql)
         self.assertEqual(texts, [])
+
+    def test_one_time_yield_on_capture(self):
+        """Faith on capturing a city with a Holy Site, scaled by game speed
+        (as Caesar's Gold, on Hellenistic Fusion's trigger)."""
+        faith = modifiers.new_effect("grant_yield")
+        faith["args"].update(Amount="60", YieldType="YIELD_FAITH")
+        capture = dict(modifiers.new_raw_effect(
+            "MODIFIER_PLAYER_CAPTURED_CITY_ATTACH_MODIFIER"),
+            attached=faith, reqs=[{"preset": "city_district",
+                                   "value": "DISTRICT_HOLY_SITE"}])
+        modifiers.check_effect(capture, "trait", self.FakeData())
+        sql, _ = modifiers.effects_sql("trait", "TRAIT_X", [capture], "X")
+        self.assertIn("VALUES ('X_MOD_1', "
+                      "'MODIFIER_PLAYER_CAPTURED_CITY_ATTACH_MODIFIER', 0, 0, "
+                      "'X_MOD_1_SUBJECT_REQS', NULL);", sql)
+        self.assertIn("'REQUIREMENT_CITY_HAS_DISTRICT'", sql)
+        self.assertIn("VALUES ('X_MOD_1_ATTACHED', "
+                      "'MODIFIER_PLAYER_GRANT_YIELD', 1, 1, NULL, NULL);", sql)
+        self.assertIn("('X_MOD_1_ATTACHED', 'Amount', 'ScaleByGameSpeed', "
+                      "'60', NULL, NULL)", sql)
+        self.assertIn("('X_MOD_1_ATTACHED', 'YieldType', 'ARGTYPE_IDENTITY', "
+                      "'YIELD_FAITH', NULL, NULL)", sql)
+        self.assertIn("Grants 60 Faith once (scaled by game speed)",
+                      modifiers.summary(capture))
+        # a raw grant scaled by game speed says so
+        raw = dict(modifiers.new_raw_effect(
+            "MODIFIER_PLAYER_GRANT_YIELD", {"Amount": "60"}),
+            arg_types={"Amount": {"Type": "ScaleByGameSpeed"}})
+        self.assertEqual(modifiers.summary(raw),
+                         "Grant yield: Amount 60 (scaled by game speed)")
+
+    def test_scaled_game_modifier_is_the_template(self):
+        mod = {"id": "TRAIT_CAESAR_GOLD_CAPTURED_CITY_MODIFIER",
+               "modifier_type": "MODIFIER_PLAYER_GRANT_YIELD",
+               "args": {"YieldType": "YIELD_GOLD", "Amount": "300"},
+               "arg_types": {"Amount": {"Type": "ScaleByGameSpeed",
+                                        "Extra": None,
+                                        "SecondExtra": None}},
+               "run_once": True, "permanent": True, "subject_reqs": [],
+               "owner_reqs": []}
+        effect = modifiers.effect_from_game(mod, "attached")
+        self.assertEqual((effect.get("template"), effect["args"]["Amount"]),
+                         ("grant_yield", "300"))
+        # one not scaled so is not
+        mod["arg_types"] = {}
+        self.assertTrue(modifiers.is_raw(modifiers.effect_from_game(
+            mod, "attached")))
+        mod["arg_types"] = {"Amount": {"Type": "ScaleByGameSpeed",
+                                       "Extra": "1"}}
+        self.assertTrue(modifiers.is_raw(modifiers.effect_from_game(
+            mod, "attached")))
 
 
 class LeaderUniquesTest(unittest.TestCase):

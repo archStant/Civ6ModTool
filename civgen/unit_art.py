@@ -272,7 +272,7 @@ def unique_unit_element(game_dir, base, art, report=None, label="",
             ) if report is not None else (lambda text: None)
     look = art.get("look_from") or base
     element = find_game_element(game_dir, UNITS_ARTDEF, "Units", look)
-    if element is None and look != base:
+    if element is None and base and look != base:   # (a new unit: no base)
         warn("no art found for {}; it looks like {}".format(look, base))
         element = find_game_element(game_dir, UNITS_ARTDEF, "Units", base)
     if element is None:

@@ -145,7 +145,7 @@ def generated_description(mod_name, civ_specs, leader_specs,
     out.append("")
     out.append("Works with the base game, Rise and Fall and Gathering "
                "Storm.")
-    out.append("[i]Made with Civ 6 Mod Generator.[/i]")
+    out.append("[i]Made with [url=https://github.com/archStant/Civ6ModTool]Civ 6 Mod Generator[/url].[/i]")
     text = "\n".join(out)
     if len(text) > MAX_DESCRIPTION:
         text = text[:MAX_DESCRIPTION - 3].rstrip() + "..."

@@ -245,7 +245,7 @@ class EffectDialog(tk.Toplevel):
                     a.name: a.default if a.kind == "fixed" else
                     self.values.get(a.name, a.default)
                     for a in t.args if a.kind != "text"},
-                    t.run_once, t.permanent)
+                    t.run_once, t.permanent, t.arg_types)
         else:
             self.raw_frame.grid_remove()
             self.template_frame.grid()
@@ -281,7 +281,7 @@ class EffectDialog(tk.Toplevel):
         if self.mode.get() == "raw":
             out.pop("template", None)
             out.update(self.raw.values())
-            for key in ("attached", "text"):
+            for key in ("attached", "text", "arg_types"):
                 if not out.get(key):
                     out.pop(key, None)
         else:

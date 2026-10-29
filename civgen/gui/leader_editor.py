@@ -424,6 +424,9 @@ class LeaderEditor(tk.Toplevel):
 
     # thumbnails of the diplomacy portraits (fitted to 800 x 1080)
     MOOD_THUMB = (48, 64)
+    # the cycling preview next to them, and how long it shows each image
+    MOOD_CYCLE_BOX = (240, 324)
+    MOOD_CYCLE_MS = 1500
 
     def _build_portraits(self, body, spec):
         """One image per slot of MOOD_SLOTS; the neutral one is the
@@ -480,7 +483,65 @@ class LeaderEditor(tk.Toplevel):
                 note.grid(row=row, column=5, sticky="w", **pad)
                 self.mood_notes[key] = note
                 row += 1
+
+        # -- a larger preview to the right, cycling through the slots that
+        # have their own image
+        cycle = ttk.Frame(body)
+        cycle.grid(row=1, column=6, rowspan=row - 1, sticky="n",
+                   padx=(16, 0), pady=(10, 0))
+        # (on the window's own colour, so transparent parts look it)
+        r, g, b = (c // 257 for c in self.winfo_rgb(
+            ttk.Style(self).lookup("TFrame", "background") or
+            self.cget("background")))
+        self._mood_cycle_backdrop = (r, g, b, 255)
+        frame = tk.Frame(cycle, width=self.MOOD_CYCLE_BOX[0],
+                         height=self.MOOD_CYCLE_BOX[1],
+                         background="#%02x%02x%02x" % (r, g, b))
+        frame.pack()
+        frame.pack_propagate(False)
+        self.mood_cycle_image = tk.Label(
+            frame, background=frame["background"], foreground=theme.hint(),
+            justify="center", wraplength=self.MOOD_CYCLE_BOX[0] - 16)
+        self.mood_cycle_image.pack(fill="both", expand=True)
+        self.mood_cycle_caption = ttk.Label(cycle, foreground=theme.hint())
+        self.mood_cycle_caption.pack(pady=(4, 0))
+        self._mood_cycle_index = 0
+        self._mood_cycle_photo = None
         self._refresh_mood_thumbs()
+        self._cycle_mood_preview()
+
+    def _cycle_mood_preview(self):
+        """Show the next slot with its own image, then come back later."""
+        if not self.winfo_exists():
+            return
+        paths = {key: var.get().strip()
+                 for key, var in self.mood_vars.items()}
+        paths["NEUTRAL"] = self.load_fg_path.get().strip()
+        shown = [key for key, *_ in MOOD_SLOTS
+                 if paths.get(key) and os.path.isfile(paths[key])]
+        photo, text, caption = None, "(no portraits yet)", ""
+        if shown:
+            index = self._mood_cycle_index % len(shown)
+            self._mood_cycle_index = index + 1
+            key = shown[index]
+            caption = "{} ({}/{})".format(mood_label(key), index + 1,
+                                         len(shown))
+            try:
+                from PIL import ImageTk
+                img = preview_image(paths[key], self.MOOD_CYCLE_BOX,
+                                    portrait=True,
+                                    backdrop=self._mood_cycle_backdrop)
+                if img is not None:
+                    photo = ImageTk.PhotoImage(img)
+            except ImportError:
+                text = "(install Pillow for a preview)"
+            except Exception as exc:    # unreadable image
+                text = "(cannot preview: {})".format(exc)
+        self._mood_cycle_photo = photo
+        self.mood_cycle_image.configure(image=photo or "",
+                                        text="" if photo else text)
+        self.mood_cycle_caption.configure(text=caption)
+        self.after(self.MOOD_CYCLE_MS, self._cycle_mood_preview)
 
     def _refresh_mood_thumbs(self):
         """Each slot's thumbnail shows what the diplomacy screen would: its

@@ -1,3 +1,10 @@
+venv\Scripts\activate.ps1
+if ($?) {
+    Write-Host "Virtual environment activated successfully."
+} else {
+    Write-Host "Failed to activate virtual environment."
+    exit 1
+}
 nuitka --standalone `
     --onefile `
     --enable-plugin=tk-inter `

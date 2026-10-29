@@ -31,6 +31,7 @@ from .uniques import unique_icons_sql, unique_sql, unique_text_rows
 from .unit_art import describe as describe_unit_art
 from .unit_art import is_custom as is_custom_art
 from .unit_art import unique_unit_art
+from .unit_classes import class_label
 from .landmarks import (LANDMARKS_ARTDEF, building_districts,
                         building_landmark_parts, district_landmark,
                         landmark_buildings, landmark_xml, merged_landmark,
@@ -271,6 +272,10 @@ def build_modinfo(mod_name, description, guid, has_icons, dep_file, files,
     custom files' actions (see check_extra_files; their files are in
     files). The mod changes gameplay, so saved games need it
     (AffectsSavedGames)."""
+    def modinfo_text(value):
+        value = str(value).replace("\r\n", "\n").replace("\r", "\n")
+        return xml_escape(value.replace("\n", "[NEWLINE]"))
+
     def icons(scope):
         if has_icons and not icons_sql:
             out = ICONS_ACTION.format(scope=scope)
@@ -339,9 +344,9 @@ def build_modinfo(mod_name, description, guid, has_icons, dep_file, files,
 {files}
   </Files>
 </Mod>
-""".format(guid=guid, mod_name=xml_escape(mod_name),
-           description=xml_escape(description), version=int(version),
-           authors=xml_escape(authors or "Made with Civ 6 Mod Generator"),
+""".format(guid=guid, mod_name=modinfo_text(mod_name),
+           description=modinfo_text(description), version=int(version),
+           authors=modinfo_text(authors or "Made with Civ 6 Mod Generator"),
            ingame_icons=icons("InGame"), frontend_icons=icons("FrontEnd"),
            criteria=criteria,
            teaser="New civilizations and leaders" if has_civs
@@ -465,8 +470,10 @@ def readme_unique(u):
         "a copy of " + u["base"] if u["base"] else
         "new" + (" (in {})".format(u["district"]) if u["district"]
                  else ""),
-        ", replacing " + u["replaced"] if u["replaced"] else
-        ", replacing nothing",
+        (", replacing " + u["replaced"] if u["replaced"] else
+         ", replacing nothing") +
+        (", class " + class_label(u["unit_class"])
+         if u.get("unit_class") else ""),
         "; 3D model: " + describe_unit_art(u["art"])
         if is_custom_art(u.get("art")) else "")
 
