@@ -179,7 +179,7 @@ class GeneratorApp(tk.Tk):
                         background="#d64541",
                         font=("TkDefaultFont", 10, "bold"), padding=(4, 0))
         # tall rows so each leader's icon fits next to their name
-        style.configure("Leaders.Treeview", rowheight=LIST_ICON_SIZE + 8)
+        style.configure("Leaders.Treeview", rowheight=LIST_ICON_SIZE + 16)
 
     def on_dark_mode(self):
         """The toolbar's Dark mode switch: apply and remember it."""
