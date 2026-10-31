@@ -7,6 +7,7 @@ from tkinter import ttk
 
 from ..art import MOMENT_HALF_OPACITY, MOMENT_MASK, apply_image_mask
 from ..util import asset_path
+from . import theme
 from .widgets import browse_image
 
 HELP = (
@@ -99,7 +100,7 @@ class MomentsFrame(ttk.Frame):
             if path and os.path.isfile(path):
                 img = apply_image_mask(
                     path, asset_path(MOMENT_MASK) if row["mask"].get()
-                    else None, size=(91, 66),
+                    else None, size=theme.scaled((91, 66)),
                     opacity=MOMENT_HALF_OPACITY if row["half"].get()
                     else 1.0, sepia=row["sepia"].get())
                 backdrop = Image.new("RGBA", img.size, (43, 43, 43, 255))

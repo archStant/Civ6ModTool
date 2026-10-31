@@ -55,6 +55,7 @@ class GeneratorApp(tk.Tk):
         # light / dark mode before any widget, so they start in its colors
         theme.init(self, self._configure_styles)
         theme.apply(theme.preferred_dark())
+        theme.apply_ui_scale(theme.preferred_ui_scale())
 
         self.data = GameData()
         self.project = self._empty_project()
@@ -179,7 +180,9 @@ class GeneratorApp(tk.Tk):
                         background="#d64541",
                         font=("TkDefaultFont", 10, "bold"), padding=(4, 0))
         # tall rows so each leader's icon fits next to their name
-        style.configure("Leaders.Treeview", rowheight=LIST_ICON_SIZE + 16)
+        style.configure("Leaders.Treeview",
+                        rowheight=theme.row_height(
+                            theme.scaled(LIST_ICON_SIZE + 16)))
 
     def on_dark_mode(self):
         """The toolbar's Dark mode switch: apply and remember it."""
@@ -198,6 +201,13 @@ class GeneratorApp(tk.Tk):
         else:
             self.custom_btn.pack_forget()
         self._refresh_custom_note()
+
+    def on_settings(self):
+        from .settings_dialog import SettingsDialog
+        scale = theme.ui_scale()
+        self.wait_window(SettingsDialog(self))
+        if theme.ui_scale() != scale:   # the lists' icons follow it
+            self._refresh_lists()
 
     def _refresh_custom_note(self):
         """The status bar's note of the project's custom files."""
@@ -291,6 +301,10 @@ class GeneratorApp(tk.Tk):
             "beliefs, promotions, great people...\n\nBasic mode keeps to "
             "the effect list. Advanced effects made before stay in the "
             "mod either way. Remembered for next time."))
+        settings_btn = tool("Settings...", self.on_settings,
+                            "UI scale and other settings (remembered for "
+                            "next time)")
+        settings_btn.pack_configure(side="right")
         ttk.Separator(self, orient="horizontal").pack(side="top", fill="x")
 
         # -- status bar: project file and game data
@@ -554,7 +568,8 @@ class GeneratorApp(tk.Tk):
             try:
                 from PIL import ImageTk
                 photo = ImageTk.PhotoImage(
-                    leader_icon_preview(spec, LIST_ICON_SIZE))
+                    leader_icon_preview(spec,
+                                        theme.scaled(LIST_ICON_SIZE)))
                 self._list_icons.append(photo)
             except ImportError:         # no Pillow: names only
                 pass
@@ -591,7 +606,7 @@ class GeneratorApp(tk.Tk):
             try:
                 from PIL import ImageTk
                 photo = ImageTk.PhotoImage(civ_icon_preview(
-                    spec, LIST_ICON_SIZE,
+                    spec, theme.scaled(LIST_ICON_SIZE),
                     badge=colors.get(civ_type, CIV_BADGE_COLOR)))
                 self._civ_icons.append(photo)
             except ImportError:         # no Pillow: names only
