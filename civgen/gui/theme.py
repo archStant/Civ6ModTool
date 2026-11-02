@@ -10,6 +10,9 @@ Hint text (grey) uses hint(), which follows the mode.
 
 The choice is remembered in the user's settings (settings.json in the
 app's folder under %APPDATA%); without one, the Windows app theme decides.
+
+The UI scale (a percentage, also in the settings) multiplies the screen's
+own scaling: fonts and the sizes Tk measures in points grow with it.
 """
 
 import json
@@ -17,6 +20,7 @@ import os
 import sys
 
 import tkinter as tk
+from tkinter import font as tkfont
 from tkinter import ttk
 
 # role -> color; LIGHT is filled in from the platform's defaults (init)
@@ -31,7 +35,10 @@ LIGHT = {"hint": "gray25", "tooltip": "#ffffe0", "tooltip_fg": "black",
          "accent": "#1a73e8"}
 
 _state = {"dark": False, "light_theme": None, "root": None,
-          "on_change": []}
+          "on_change": [], "base_scaling": None, "font_sizes": {},
+          "ui_scale": 100}
+# the UI scale's choices, in percent
+UI_SCALES = (75, 90, 100, 110, 125, 150, 175, 200, 250, 300)
 # classic widget option -> palette role, per widget class
 CLASSIC = {
     "Text": {"background": "field", "foreground": "field_fg",
@@ -117,6 +124,57 @@ def preferred_dark():
     return system_prefers_dark() if value is None else bool(value)
 
 
+def preferred_ui_scale():
+    """The remembered UI scale in percent (100 without one)."""
+    try:
+        value = int(load_settings().get("ui_scale", 100))
+    except (TypeError, ValueError):
+        return 100
+    return min(max(value, UI_SCALES[0]), UI_SCALES[-1])
+
+
+def ui_scale():
+    """The UI scale in use, in percent."""
+    return _state["ui_scale"]
+
+
+# ---------------------------------------------------------------------------
+# UI scale
+# ---------------------------------------------------------------------------
+
+def apply_ui_scale(percent):
+    """Scale fonts and point sizes to percent of the screen's own scaling
+    (call after init; re-applies the styles, so open windows follow)."""
+    root = _state["root"]
+    _state["ui_scale"] = int(percent)
+    factor = percent / 100.0
+    root.tk.call("tk", "scaling", _state["base_scaling"] * factor)
+    # named fonts in points follow the new scaling once reconfigured;
+    # those in pixels (negative sizes) are scaled by hand
+    for name in tkfont.names(root):
+        named = tkfont.nametofont(name, root=root)
+        size = _state["font_sizes"].setdefault(name, int(named.cget("size")))
+        named.configure(size=size if size > 0 else
+                        min(-1, int(round(size * factor))))
+    apply(_state["dark"])
+
+
+def scaled(size):
+    """A size in pixels (or a (width, height) of them) at the UI scale:
+    for images and the frames around them, which do not grow by
+    themselves."""
+    if isinstance(size, (tuple, list)):
+        return tuple(scaled(n) for n in size)
+    return max(1, int(round(size * _state["ui_scale"] / 100.0)))
+
+
+def row_height(minimum=0):
+    """A Treeview row height that fits a line of the default font."""
+    root = _state["root"]
+    line = tkfont.nametofont("TkDefaultFont", root=root).metrics("linespace")
+    return max(minimum, line + 5)
+
+
 # ---------------------------------------------------------------------------
 # Applying a mode
 # ---------------------------------------------------------------------------
@@ -128,6 +186,9 @@ def init(root, on_change=None):
     style = ttk.Style(root)
     _state["root"] = root
     _state["light_theme"] = style.theme_use()
+    # (the screen's own; Tk shares it between interpreters, so read it once)
+    if _state["base_scaling"] is None:
+        _state["base_scaling"] = float(root.tk.call("tk", "scaling"))
     if on_change:
         _state["on_change"].append(on_change)
     # the platform's own classic widget colors, read from fresh widgets
@@ -161,6 +222,8 @@ def apply(dark):
         _dark_styles(style)
     else:
         style.theme_use(_state["light_theme"])
+    # Treeview rows do not grow with the font by themselves
+    style.configure("Treeview", rowheight=row_height())
     _option_database(root, new)
     for callback in _state["on_change"]:
         callback()

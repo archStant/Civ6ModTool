@@ -36,7 +36,7 @@ UPLOADER_EXE = "Firaxis.SteamWorkshop.exe"
 MAX_TITLE = 128
 MAX_DESCRIPTION = 8000
 MAX_PREVIEW_BYTES = 1024 * 1024
-PREVIEW_SIZE = 512
+PREVIEW_SIZE = 512*4
 VISIBILITIES = ["Public", "Friends Only", "Private"]
 # files the uploader refuses
 FORBIDDEN = (".zip", ".7z", ".rar", ".gz", ".tar", ".exe", ".dll", ".bat",
@@ -145,7 +145,7 @@ def generated_description(mod_name, civ_specs, leader_specs,
     out.append("")
     out.append("Works with the base game, Rise and Fall and Gathering "
                "Storm.")
-    out.append("[i]Made with [url=https://github.com/archStant/Civ6ModTool]Civ 6 Mod Generator[/url].[/i]")
+    out.append("[i]Made with [url=https://github.com/archStant/Civ6ModTool]Civ 6 Mod Generator[/url][/i]")
     text = "\n".join(out)
     if len(text) > MAX_DESCRIPTION:
         text = text[:MAX_DESCRIPTION - 3].rstrip() + "..."
@@ -195,6 +195,13 @@ def _leader_color(leader_specs):
                  or (60, 90, 150))
 
 
+def _icon_tint(leader_specs):
+    """The first leader's secondary color, which the game colors the
+    (white) civilization icon with."""
+    return tuple((leader_specs[0].get("secondary") if leader_specs else None)
+                 or (230, 230, 230))
+
+
 def _gradient(size):
     """A dark backdrop with a soft vertical gradient."""
     from PIL import Image, ImageDraw
@@ -206,8 +213,16 @@ def _gradient(size):
     return img
 
 
-def _simple_preview(title, civ_specs, leader_specs):
+def _fit(img, box):
+    """img scaled (up or down, aspect kept) to fit inside box (w, h) -
+    unlike thumbnail, which only shrinks."""
     from PIL import Image
+    scale = min(box[0] / float(img.width), box[1] / float(img.height))
+    return img.resize((max(1, int(img.width * scale)),
+                       max(1, int(img.height * scale))), Image.LANCZOS)
+
+
+def _simple_preview(title, civ_specs, leader_specs):
     from .art import fitted_portrait
     from .civs import civ_icon_preview
     size = PREVIEW_SIZE
@@ -216,18 +231,19 @@ def _simple_preview(title, civ_specs, leader_specs):
     color = _leader_color(leader_specs)
     for civ in civ_specs:
         if (civ.get("icon_path") or "").strip():
-            picture = civ_icon_preview(civ, int(size * 0.62), badge=color)
+            picture = civ_icon_preview(civ, int(size * 0.62), badge=color,
+                                       tint=_icon_tint(leader_specs))
             break
     if picture is None:
         for spec in leader_specs:
             src = (spec.get("load_fg_path") or "").strip()
             if src and os.path.isfile(src):
-                picture = fitted_portrait(src).copy()
-                picture.thumbnail((int(size * 0.78), int(size * 0.78)),
-                                  Image.LANCZOS)
+                picture = _fit(fitted_portrait(src),
+                               (int(size * 0.78), int(size * 0.78)))
                 break
     if picture is None and civ_specs:
-        picture = civ_icon_preview(civ_specs[0], int(size * 0.62))
+        picture = civ_icon_preview(civ_specs[0], int(size * 0.62),
+                                   badge=color, tint=_icon_tint(leader_specs))
     if picture is not None:
         img.alpha_composite(picture.convert("RGBA"),
                             ((size - picture.width) // 2,
@@ -398,11 +414,7 @@ def _busy_preview(title, civ_specs, leader_specs):
     # leaders: standing on the banner, the first in front and centre
     if portraits:
         height = int(size * (0.72 if len(portraits) == 1 else 0.62))
-        fitted = []
-        for p in portraits:
-            p = p.copy()
-            p.thumbnail((size, height), Image.LANCZOS)
-            fitted.append(p)
+        fitted = [_fit(p, (size, height)) for p in portraits]
         spots = {1: [0.5], 2: [0.33, 0.67], 3: [0.5, 0.2, 0.8]}[len(fitted)]
         # back ones first, smaller
         order = sorted(range(len(fitted)), key=lambda i: -i)
@@ -417,7 +429,8 @@ def _busy_preview(title, civ_specs, leader_specs):
     # the civilization's icon, top left (a second one next to it)
     x = int(size * 0.03)
     for civ in civ_icons:
-        badge = civ_icon_preview(civ, int(size * 0.2), badge=color)
+        badge = civ_icon_preview(civ, int(size * 0.2), badge=color,
+                                 tint=_icon_tint(leader_specs))
         _paste(img, badge, x, int(size * 0.03))
         x += badge.width + int(size * 0.02)
 

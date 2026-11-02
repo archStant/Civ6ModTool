@@ -30,7 +30,12 @@ class IconCropDialog(tk.Toplevel):
 
         self.src = fitted_portrait(src)
         w, h = self.src.size
-        self.scale = min(1.0, self.MAX_W / float(w), self.MAX_H / float(h))
+        # (at the UI scale, but leaving room on the screen for the rest)
+        max_w = min(theme.scaled(self.MAX_W), self.winfo_screenwidth() * 0.6)
+        max_h = min(theme.scaled(self.MAX_H),
+                    self.winfo_screenheight() * 0.75)
+        self.scale = min(1.0, max_w / float(w), max_h / float(h))
+        self.edge = theme.scaled(self.EDGE)
         dw, dh = max(1, int(w * self.scale)), max(1, int(h * self.scale))
         # show transparent portraits on a checker-free dark background
         backdrop = Image.new("RGBA", (dw, dh), (40, 40, 40, 255))
@@ -62,15 +67,18 @@ class IconCropDialog(tk.Toplevel):
         side = ttk.Frame(body, padding=(12, 0, 0, 0))
         side.grid(row=0, column=1, sticky="n")
         ttk.Label(side, text="Preview").pack(anchor="w")
-        self.preview = tk.Canvas(side, width=200, height=140,
+        px = theme.scaled
+        self.preview = tk.Canvas(side, width=px(200), height=px(140),
                                  highlightthickness=0, background="#2b2b2b")
         self.preview.pack(anchor="w", pady=(2, 10))
-        self.preview_big = self.preview.create_image(8, 6, anchor="nw")
-        self.preview_small = self.preview.create_image(144, 38, anchor="nw")
+        self.preview_big = self.preview.create_image(px(8), px(6),
+                                                     anchor="nw")
+        self.preview_small = self.preview.create_image(px(144), px(38),
+                                                       anchor="nw")
 
         ttk.Label(side, text="Border width").pack(anchor="w")
         self.width_var = tk.IntVar(value=int(border_width))
-        tk.Scale(side, from_=0, to=40, orient="horizontal", length=200,
+        tk.Scale(side, from_=0, to=40, orient="horizontal", length=px(200),
                  variable=self.width_var,
                  command=lambda *_: self.schedule()).pack(anchor="w")
         color_row = ttk.Frame(side)
@@ -80,7 +88,7 @@ class IconCropDialog(tk.Toplevel):
         self.swatch.pack(side="left", padx=6)
         ttk.Button(color_row, text="Pick...",
                    command=self.pick_color).pack(side="left")
-        ttk.Label(side, wraplength=200, justify="left", text=(
+        ttk.Label(side, wraplength=px(200), justify="left", text=(
             "Drag inside the circle to move it. Drag its edge or the "
             "handle, or use the mouse wheel, to resize.")).pack(
             anchor="w", pady=(14, 0))
@@ -135,10 +143,11 @@ class IconCropDialog(tk.Toplevel):
                            cx + r + 5, cy + 5)
 
         icon = make_circle_icon(self.src, self.crop, self.border_color,
-                                self.width_var.get(), size=128)
+                                self.width_var.get(),
+                                size=theme.scaled(128))
         self._preview_big = ImageTk.PhotoImage(icon)
         self._preview_small = ImageTk.PhotoImage(
-            icon.resize((48, 48), Image.LANCZOS))
+            icon.resize(theme.scaled((48, 48)), Image.LANCZOS))
         self.preview.itemconfig(self.preview_big, image=self._preview_big)
         self.preview.itemconfig(self.preview_small,
                                 image=self._preview_small)
@@ -148,7 +157,7 @@ class IconCropDialog(tk.Toplevel):
     def _hit(self, x, y):
         cx, cy, r = self._disp_circle()
         d = ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5
-        if abs(d - r) <= self.EDGE:
+        if abs(d - r) <= self.edge:
             return "resize"
         return "move" if d < r else None
 
@@ -593,15 +602,15 @@ class ImagePreview(ttk.Label):
     def refresh(self):
         self._photo, text = None, ""
         path = self.var.get().strip()
+        size = theme.scaled(self.size)
         try:
             from PIL import Image, ImageTk
             if path and os.path.isfile(path):
                 img = Image.open(path).convert("RGBA")
-                img.thumbnail((self.size, self.size), Image.LANCZOS)
-                out = Image.new("RGBA", (self.size, self.size),
-                                (43, 43, 43, 255))
-                out.alpha_composite(img, ((self.size - img.width) // 2,
-                                          (self.size - img.height) // 2))
+                img.thumbnail((size, size), Image.LANCZOS)
+                out = Image.new("RGBA", (size, size), (43, 43, 43, 255))
+                out.alpha_composite(img, ((size - img.width) // 2,
+                                          (size - img.height) // 2))
                 self._photo = ImageTk.PhotoImage(out)
             elif path:
                 text = "(file not found)"

@@ -350,14 +350,14 @@ class LeaderEditor(tk.Toplevel):
         previews.grid(row=row, column=0, columnspan=4, sticky="we",
                       padx=6, pady=(10, 3))
         self.preview_labels = {}
+        box = theme.scaled(PREVIEW_BOX)
         for col, (key, caption) in enumerate((
                 ("portrait", "Portrait"),
                 ("load_bg", "Loading background"),
                 ("diplo_bg", "Diplomacy background"))):
             ttk.Label(previews, text=caption).grid(row=0, column=col,
                                                    sticky="w", padx=6)
-            frame = tk.Frame(previews, width=PREVIEW_BOX[0],
-                             height=PREVIEW_BOX[1],
+            frame = tk.Frame(previews, width=box[0], height=box[1],
                              background="#%02x%02x%02x" %
                              PREVIEW_BACKDROP[:3])
             frame.grid(row=1, column=col, padx=6, pady=(2, 4))
@@ -365,7 +365,7 @@ class LeaderEditor(tk.Toplevel):
             frame.pack_propagate(False)
             label = tk.Label(frame, background=frame["background"],
                              foreground="#bbbbbb", justify="center",
-                             wraplength=PREVIEW_BOX[0] - 16)
+                             wraplength=box[0] - 16)
             label.pack(fill="both", expand=True)
             self.preview_labels[key] = label
         self._preview_photos = {}
@@ -401,8 +401,8 @@ class LeaderEditor(tk.Toplevel):
                 from PIL import ImageTk
                 if path and not os.path.isfile(path):
                     text = "(file not found)"
-                img = preview_image(path, PREVIEW_BOX, mask_path, portrait,
-                                    hue)
+                img = preview_image(path, theme.scaled(PREVIEW_BOX),
+                                    mask_path, portrait, hue)
                 if img is not None:
                     photo = ImageTk.PhotoImage(img)
             except ImportError:
@@ -451,8 +451,8 @@ class LeaderEditor(tk.Toplevel):
                 name.grid(row=row, column=0, sticky="w", padx=(12, 6),
                           pady=2)
                 add_tooltip(name, tip)
-                frame = tk.Frame(body, width=self.MOOD_THUMB[0],
-                                 height=self.MOOD_THUMB[1],
+                thumb_w, thumb_h = theme.scaled(self.MOOD_THUMB)
+                frame = tk.Frame(body, width=thumb_w, height=thumb_h,
                                  background="#%02x%02x%02x" %
                                  PREVIEW_BACKDROP[:3])
                 frame.grid(row=row, column=1, **pad)
@@ -494,14 +494,14 @@ class LeaderEditor(tk.Toplevel):
             ttk.Style(self).lookup("TFrame", "background") or
             self.cget("background")))
         self._mood_cycle_backdrop = (r, g, b, 255)
-        frame = tk.Frame(cycle, width=self.MOOD_CYCLE_BOX[0],
-                         height=self.MOOD_CYCLE_BOX[1],
+        cycle_w, cycle_h = theme.scaled(self.MOOD_CYCLE_BOX)
+        frame = tk.Frame(cycle, width=cycle_w, height=cycle_h,
                          background="#%02x%02x%02x" % (r, g, b))
         frame.pack()
         frame.pack_propagate(False)
         self.mood_cycle_image = tk.Label(
             frame, background=frame["background"], foreground=theme.hint(),
-            justify="center", wraplength=self.MOOD_CYCLE_BOX[0] - 16)
+            justify="center", wraplength=cycle_w - 16)
         self.mood_cycle_image.pack(fill="both", expand=True)
         self.mood_cycle_caption = ttk.Label(cycle, foreground=theme.hint())
         self.mood_cycle_caption.pack(pady=(4, 0))
@@ -528,7 +528,8 @@ class LeaderEditor(tk.Toplevel):
                                          len(shown))
             try:
                 from PIL import ImageTk
-                img = preview_image(paths[key], self.MOOD_CYCLE_BOX,
+                img = preview_image(paths[key],
+                                    theme.scaled(self.MOOD_CYCLE_BOX),
                                     portrait=True,
                                     backdrop=self._mood_cycle_backdrop)
                 if img is not None:
@@ -562,7 +563,8 @@ class LeaderEditor(tk.Toplevel):
                 from PIL import ImageTk
                 if paths[key] and not os.path.isfile(paths[key]):
                     note = "(file not found)"
-                img = preview_image(paths[shown], self.MOOD_THUMB,
+                img = preview_image(paths[shown],
+                                    theme.scaled(self.MOOD_THUMB),
                                     portrait=True)
                 if img is not None:
                     photo = ImageTk.PhotoImage(img)
@@ -1272,7 +1274,8 @@ class LeaderEditor(tk.Toplevel):
                     icon = make_circle_icon(fitted_portrait(src),
                                             self.icon_crop,
                                             self.icon_border_color,
-                                            self.icon_border_width, size=64)
+                                            self.icon_border_width,
+                                            size=theme.scaled(64))
                 else:
                     text = "(pick a loading portrait - until then the " \
                            "{} icon is used)".format(
@@ -1284,7 +1287,7 @@ class LeaderEditor(tk.Toplevel):
                 icon = None
                 if src and os.path.isfile(src):
                     icon = Image.open(src).convert("RGBA")
-                    icon.thumbnail((64, 64), Image.LANCZOS)
+                    icon.thumbnail(theme.scaled((64, 64)), Image.LANCZOS)
             if icon is not None:
                 self._thumb = ImageTk.PhotoImage(icon)
         except ImportError:
