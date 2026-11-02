@@ -593,13 +593,16 @@ class GeneratorApp(tk.Tk):
         selected = tree.selection()
         tree.delete(*tree.get_children())
         self._civ_icons = []
-        led, colors = {}, {}
+        led, colors, tints = {}, {}, {}
         for spec in self.project["leaders"]:
             civ_type = self.resolve_civ(spec)
             led.setdefault(civ_type, []).append(spec.get("name", ""))
-            # the badge behind the icon: its first leader's color
+            # the badge behind the icon and the icon itself: its first
+            # leader's colors
             colors.setdefault(civ_type, tuple(spec.get("primary") or
                                               CIV_BADGE_COLOR))
+            tints.setdefault(civ_type, spec.get("secondary") and
+                             tuple(spec["secondary"]))
         for i, spec in enumerate(self.project["civs"]):
             civ_type = civ_slug(spec, self.type_prefix())
             photo = ""
@@ -607,7 +610,8 @@ class GeneratorApp(tk.Tk):
                 from PIL import ImageTk
                 photo = ImageTk.PhotoImage(civ_icon_preview(
                     spec, theme.scaled(LIST_ICON_SIZE),
-                    badge=colors.get(civ_type, CIV_BADGE_COLOR)))
+                    badge=colors.get(civ_type, CIV_BADGE_COLOR),
+                    tint=tints.get(civ_type)))
                 self._civ_icons.append(photo)
             except ImportError:         # no Pillow: names only
                 pass

@@ -348,20 +348,30 @@ def civ_icons_sql(civ):
 CIV_BADGE_COLOR = (43, 43, 43)          # badge without a leader color
 
 
-def civ_icon_preview(spec, size, badge=None):
+def civ_icon_preview(spec, size, badge=None, tint=None):
     """The civilization's icon image (size x size RGBA), or a placeholder
     with its initials. badge: an (r, g, b) color to draw the icon on a
     round badge of, like the game does (the game's civilization icons are
-    white, which a light list background would hide). Raises ImportError
-    without Pillow."""
-    from PIL import Image, ImageDraw
+    white, which a light list background would hide). tint: an (r, g, b)
+    color the (white) icon is multiplied by, like the game colors it with
+    the leader's secondary color. Raises ImportError without Pillow."""
+    from PIL import Image, ImageChops, ImageDraw
     path = (spec.get("icon_path") or "").strip()
     if path and os.path.isfile(path):
         def make():
             img = Image.open(path).convert("RGBA")
             # on a badge the icon keeps clear of the badge's edge
             inner = int(round(size * 0.72)) if badge else size
-            img.thumbnail((inner, inner), Image.LANCZOS)
+            # scaled up too (thumbnail only shrinks), for big previews
+            scale = inner / float(max(img.size))
+            img = img.resize((max(1, int(img.width * scale)),
+                              max(1, int(img.height * scale))), Image.LANCZOS)
+            if tint:
+                rgb = ImageChops.multiply(
+                    img.convert("RGB"),
+                    Image.new("RGB", img.size, tuple(tint)))
+                rgb.putalpha(img.getchannel("A"))
+                img = rgb
             out = Image.new("RGBA", (size, size), (0, 0, 0, 0))
             if badge:
                 ss = 4                  # supersampled, for a smooth edge
@@ -375,8 +385,8 @@ def civ_icon_preview(spec, size, badge=None):
                                       (size - img.height) // 2))
             return out
         try:
-            icon = _cached(("civ_icon", size, tuple(badge or ())), path,
-                           make)
+            icon = _cached(("civ_icon", size, tuple(badge or ()),
+                            tuple(tint or ())), path, make)
             if icon is not None:
                 return icon
         except Exception:               # unreadable image
