@@ -225,12 +225,15 @@ class LeaderEditor(tk.Toplevel):
         self.load_bg_path = tk.StringVar(value=spec.get("load_bg_path", ""))
         self.diplo_bg_path = tk.StringVar(
             value=spec.get("diplo_bg_path", ""))
+        self.diplo_fg_path = tk.StringVar(
+            value=spec.get("diplo_fg_path", ""))
         for label, var in (
                 ("Portrait", self.load_fg_path),
                 ("Loading background", self.load_bg_path),
-                ("Diplomacy background", self.diplo_bg_path)):
-            ttk.Label(body, text=label).grid(row=row, column=0, sticky="w",
-                                             **pad)
+                ("Diplomacy background", self.diplo_bg_path),
+                ("Diplomacy foreground", self.diplo_fg_path)):
+            label_widget = ttk.Label(body, text=label)
+            label_widget.grid(row=row, column=0, sticky="w", **pad)
             entry = ttk.Entry(body, textvariable=var, width=40)
             entry.grid(row=row, column=1, sticky="w", **pad)
             browse = ttk.Button(
@@ -238,10 +241,21 @@ class LeaderEditor(tk.Toplevel):
                 command=lambda v=var, t=label: self.browse_image(v, t))
             browse.grid(row=row, column=2, sticky="w", **pad)
             row += 1
-        # the loading background (two rows above): the default image
+        label_widget.configure(text="Diplomacy foreground (?)")
+        add_tooltip(label_widget, (
+            "Optional. Laid over the diplomacy background, which slides in "
+            "behind it like the game's own scenes. Use an image the size of "
+            "the background, transparent where the background should "
+            "show. Needs a diplomacy background."))
+        # (the last row's) only usable with a diplomacy background
+        self.diplo_fg_widgets = (entry, browse)
+        self.diplo_bg_path.trace_add("write",
+                                     lambda *_: self._update_diplo_fg())
+        self._update_diplo_fg()
+        # the loading background (three rows above): the default image
         # instead of one of its own, and a hue shift
         bg_options = ttk.Frame(body)
-        bg_options.grid(row=row - 2, column=3, sticky="w", **pad)
+        bg_options.grid(row=row - 3, column=3, sticky="w", **pad)
         self.load_bg_default = tk.BooleanVar(
             value=bool(spec.get("load_bg_default")))
         default_check = ttk.Checkbutton(
@@ -276,12 +290,13 @@ class LeaderEditor(tk.Toplevel):
                    command=lambda: self.load_bg_hue.set(0)).pack(side="left")
         self.load_bg_hue.trace_add("write",
                                    lambda *_: self._schedule_previews())
-        # optional fade mask for the diplomacy background (last row above)
+        # optional fade mask for the diplomacy background and foreground
+        # (two rows above)
         self.diplo_bg_mask = tk.BooleanVar(
             value=bool(spec.get("diplo_bg_mask")))
         mask_check = ttk.Checkbutton(body, text="Apply fade mask",
                                      variable=self.diplo_bg_mask)
-        mask_check.grid(row=row - 1, column=3, sticky="w", **pad)
+        mask_check.grid(row=row - 2, column=3, sticky="w", **pad)
         if not asset_path(DIPLO_BG_MASK):
             mask_check.state(["disabled"])
             mask_check.configure(text="Apply fade mask (assets/{} not found)"
@@ -371,7 +386,7 @@ class LeaderEditor(tk.Toplevel):
         self._preview_photos = {}
         mask_check.configure(command=self._refresh_previews)
         for var in (self.load_fg_path, self.load_bg_path,
-                    self.diplo_bg_path, self.orig_var):
+                    self.diplo_bg_path, self.diplo_fg_path, self.orig_var):
             var.trace_add("write", lambda *_: self._schedule_previews())
         self._refresh_previews()
 
@@ -390,19 +405,24 @@ class LeaderEditor(tk.Toplevel):
         load_bg = self.load_bg_path.get().strip()
         if not load_bg and self.load_bg_default.get():
             load_bg = asset_path(DEFAULT_LOAD_BG) or ""
+        # the diplomacy background with its foreground over it
         sources = {
-            "portrait": (self.load_fg_path.get().strip(), None, True, 0),
-            "load_bg": (load_bg, None, False, self._load_bg_hue()),
-            "diplo_bg": (self.diplo_bg_path.get().strip(), mask, False, 0),
+            "portrait": (self.load_fg_path.get().strip(), None, True, 0,
+                         None),
+            "load_bg": (load_bg, None, False, self._load_bg_hue(), None),
+            "diplo_bg": (self.diplo_bg_path.get().strip(), mask, False, 0,
+                         self.diplo_fg_path.get().strip()),
         }
-        for key, (path, mask_path, portrait, hue) in sources.items():
+        for key, (path, mask_path, portrait, hue, overlay) in \
+                sources.items():
             photo, text = None, inherited
             try:
                 from PIL import ImageTk
                 if path and not os.path.isfile(path):
                     text = "(file not found)"
                 img = preview_image(path, theme.scaled(PREVIEW_BOX),
-                                    mask_path, portrait, hue)
+                                    mask_path, portrait, hue,
+                                    overlay=overlay)
                 if img is not None:
                     photo = ImageTk.PhotoImage(img)
             except ImportError:
@@ -414,6 +434,14 @@ class LeaderEditor(tk.Toplevel):
                                                text="" if photo else text)
         if getattr(self, "mood_thumbs", None):  # (built after this tab)
             self._refresh_mood_thumbs()
+
+    def _update_diplo_fg(self):
+        """Enable the diplomacy foreground once there is a background (a
+        foreground already chosen stays, and is only used with one)."""
+        state = ["!disabled"] if self.diplo_bg_path.get().strip() \
+            else ["disabled"]
+        for widget in self.diplo_fg_widgets:
+            widget.state(state)
 
     def _load_bg_hue(self):
         """The hue shift in degrees (0 while the field is being typed)."""
@@ -1389,6 +1417,9 @@ class LeaderEditor(tk.Toplevel):
             "load_bg_default": bool(self.load_bg_default.get()),
             "load_bg_hue": self._load_bg_hue(),
             "diplo_bg_path": self.diplo_bg_path.get().strip(),
+            # (without a background the foreground is disabled)
+            "diplo_fg_path": self.diplo_fg_path.get().strip()
+            if self.diplo_bg_path.get().strip() else "",
             "diplo_bg_mask": bool(self.diplo_bg_mask.get()),
         }
         if self._own_agenda():

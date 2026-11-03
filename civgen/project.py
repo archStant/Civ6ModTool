@@ -109,7 +109,8 @@ def project_path_for(path):
 # image they use.
 LEADERS_MAGIC = "civ6-alt-leader-generator-leaders"
 LEADERS_ENTRY = "leaders.json"
-IMAGE_KEYS = ("icon_path", "load_fg_path", "load_bg_path", "diplo_bg_path")
+IMAGE_KEYS = ("icon_path", "load_fg_path", "load_bg_path", "diplo_bg_path",
+              "diplo_fg_path")
 TUPLE_KEYS = ("primary", "secondary", "icon_border_color", "icon_crop")
 
 

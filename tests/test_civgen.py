@@ -1766,6 +1766,114 @@ class LoadingBackgroundTest(unittest.TestCase):
                                load_bg_default=True)))
 
 
+class DiplomacySceneTest(unittest.TestCase):
+    """A diplomacy foreground makes a two-layer scene like the game's own
+    (no game cache needed)."""
+
+    def setUp(self):
+        from PIL import Image
+        self.tmp = tempfile.mkdtemp(prefix="civgen_scene_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.bg = os.path.join(self.tmp, "bg.png")
+        Image.new("RGBA", (64, 36), (255, 0, 0, 255)).save(self.bg)
+        # the foreground covers the left half only
+        self.fg = os.path.join(self.tmp, "fg.png")
+        fg = Image.new("RGBA", (64, 36), (0, 0, 0, 0))
+        fg.paste((0, 0, 255, 255), (0, 0, 32, 36))
+        fg.save(self.fg)
+
+    def normalize(self, **spec):
+        s = leaders.new_leader_spec()
+        s.update(name="Q", civ="CIVILIZATION_SUMERIA",
+                 orig="LEADER_GILGAMESH", **spec)
+        return leaders.normalize_spec(s, LoadingBackgroundTest.NoData(),
+                                      "TST")
+
+    @staticmethod
+    def statement(sql, table):
+        """The INSERT INTO table statement of sql."""
+        start = sql.index("INSERT INTO {} ".format(table))
+        return sql[start:sql.index(";", start)]
+
+    def test_layers(self):
+        c = self.normalize(diplo_bg_path=self.bg, diplo_fg_path=self.fg)
+        # named like the game's CLEOPATRA_1..4, the last one on top
+        self.assertEqual((c["diplo_bg"], c["diplo_fg"]),
+                         ("TST_Q_1", "TST_Q_2"))
+        sql = leaders.gameplay_block(c)
+        self.assertTrue(self.statement(sql, "Leaders").endswith(
+            "'Female', 2\nFROM Leaders WHERE LeaderType = "
+            "'LEADER_GILGAMESH'"))
+        self.assertTrue(self.statement(sql, "DiplomacyInfo").endswith(
+            "SELECT 'LEADER_TST_Q', NULL"))
+        self.assertNotIn("AltLeaderScenes", sql)
+        # a new leader
+        c = NewLeaderTest().normalize(diplo_bg_path=self.bg,
+                                      diplo_fg_path=self.fg)
+        sql = leaders.gameplay_block(c)
+        self.assertTrue(self.statement(sql, "Leaders").endswith(
+            "'LEADER_DEFAULT', 'Female', 2)"))
+        self.assertTrue(self.statement(sql, "DiplomacyInfo").endswith(
+            "VALUES ('LEADER_TST_LIBERTY', NULL)"))
+
+    def test_single_image(self):
+        c = self.normalize(diplo_bg_path=self.bg)
+        self.assertEqual((c["diplo_bg"], c["diplo_fg"]),
+                         ("LEADER_TST_Q_DIPLO_BG", None))
+        sql = leaders.gameplay_block(c)
+        self.assertIn("SceneLayers\nFROM Leaders",
+                      self.statement(sql, "Leaders"))
+        self.assertTrue(self.statement(sql, "DiplomacyInfo").endswith(
+            "SELECT 'LEADER_TST_Q', 'LEADER_TST_Q_DIPLO_BG'"))
+        with self.assertRaisesRegex(ValueError, "foreground needs a "
+                                                "diplomacy background"):
+            self.normalize(diplo_fg_path=self.fg)
+        with self.assertRaisesRegex(ValueError, "foreground image not"):
+            self.normalize(diplo_bg_path=self.bg,
+                           diplo_fg_path=self.fg + ".gone")
+
+    def test_build_art(self):
+        """Both layers are cooked as UI textures; a foreground that cannot
+        be read leaves the leader with the inherited scene."""
+        from unittest import mock
+        cooked = {}
+
+        def cook_art(cooker, pantry, packages, fallbacks, mod_dir, report):
+            cooked.update(packages=packages)
+            return ["Platforms/Windows/BLPs/Mod_UI.blp"]
+
+        c = self.normalize(diplo_bg_path=self.bg, diplo_fg_path=self.fg)
+        with mock.patch.object(modbuild, "cook_art", cook_art):
+            modbuild.build_art([c], "Mod", self.tmp, [], "cooker.exe")
+        self.assertEqual(cooked["packages"]["Mod_UI"],
+                         ("ui", ["TST_Q_1", "TST_Q_2"]))
+
+        broken = os.path.join(self.tmp, "broken.png")
+        with open(broken, "w") as fh:
+            fh.write("not an image")
+        c = self.normalize(diplo_bg_path=self.bg, diplo_fg_path=broken)
+        report = []
+        with mock.patch.object(modbuild, "cook_art", cook_art):
+            modbuild.build_art([c], "Mod", self.tmp, report, "cooker.exe")
+        self.assertEqual((c["diplo_bg"], c["diplo_fg"]), (None, None))
+        self.assertIn("SceneLayers\nFROM Leaders",
+                      self.statement(leaders.gameplay_block(c), "Leaders"))
+        self.assertTrue(any("could not convert art" in line
+                            for line in report), report)
+
+    def test_preview(self):
+        from civgen.art import preview_image
+        box = (64, 36)
+        plain = preview_image(self.bg, box)
+        both = preview_image(self.bg, box, overlay=self.fg)
+        self.assertEqual(plain.getpixel((48, 18))[:3], (255, 0, 0))
+        self.assertEqual(both.getpixel((48, 18))[:3], (255, 0, 0))
+        self.assertEqual(both.getpixel((16, 18))[:3], (0, 0, 255))
+        # a missing foreground: the background alone
+        self.assertEqual(preview_image(self.bg, box, overlay="gone.png")
+                         .getpixel((16, 18))[:3], (255, 0, 0))
+
+
 class MoodPortraitTest(unittest.TestCase):
     """Diplomacy portraits by mood: named entries of the fallback artdef
     (no game cache needed)."""
@@ -1996,7 +2104,7 @@ class WorkshopTest(unittest.TestCase):
         path = self.ws.make_preview(os.path.join(self.tmp, "p.jpg"),
                                     "Amazons", self.civs, self.leaders)
         self.assertLess(os.path.getsize(path), self.ws.MAX_PREVIEW_BYTES)
-        self.assertEqual(Image.open(path).size, (512, 512))
+        self.assertEqual(Image.open(path).size, (self.ws.PREVIEW_SIZE,) * 2)
 
     def test_busy_preview(self):
         from PIL import Image
@@ -2011,7 +2119,7 @@ class WorkshopTest(unittest.TestCase):
                                     style="busy")
         simple = self.ws.make_preview(os.path.join(self.tmp, "simple.jpg"),
                                       "Amazons", self.civs, self.leaders)
-        self.assertEqual(Image.open(busy).size, (512, 512))
+        self.assertEqual(Image.open(busy).size, (self.ws.PREVIEW_SIZE,) * 2)
         self.assertLess(os.path.getsize(busy), self.ws.MAX_PREVIEW_BYTES)
         self.assertNotEqual(open(busy, "rb").read(),
                             open(simple, "rb").read())
