@@ -15,7 +15,8 @@ from ..texts import (DIPLO_TEXT, PEDIA_HISTORY, PEDIA_TEXT,
                      inherit_candidates, spec_texts, texts_from_json,
                      texts_to_json)
 from ..modifiers import describe_effects
-from ..leaders import AI_TRAITS, DEFAULT_AI_TRAITS, spec_icon_mode
+from ..leaders import (AI_TRAITS, DEFAULT_AI_TRAITS, NO_RELIGION,
+                       spec_icon_mode)
 from ..references import retarget
 from ..uniques import KINDS
 from ..moods import MOOD_GROUPS, MOOD_SLOTS, resolve_slot
@@ -24,7 +25,7 @@ from . import theme
 from .widgets import WRITE_TIP, write_description
 from .widgets import fit_to_screen
 from .widgets import icon_text
-from .widgets import IconCropDialog, ScrollFrame, add_tooltip
+from .widgets import IconCropDialog, ScrollFrame, TypeCombo, add_tooltip
 from .modifier_editor import EffectsFrame
 from .agenda_editor import ReactionsFrame
 from .uniques_frame import UniquesFrame, unique_choices
@@ -796,12 +797,60 @@ class LeaderEditor(tk.Toplevel):
             self.ai_vars[trait] = (var, check)
         self.orig_var.trace_add("write", lambda *_: self._refresh_ai_box())
         self._refresh_ai_box()
+        self._build_religion(parent, spec)
 
         self.agenda_var.trace_add("write",
                                   lambda *_: self._refresh_agenda_info())
         self.orig_var.trace_add("write",
                                 lambda *_: self._refresh_agenda_info())
         self._refresh_agenda_info()
+
+    # favored religion: "" (the original leader's) as a choice of its own
+    RELIGION_INHERIT = "INHERIT"
+
+    def _build_religion(self, parent, spec):
+        box = ttk.LabelFrame(parent, text="Favored religion", padding=(8, 4))
+        box.grid(row=8, column=0, columnspan=2, sticky="we", pady=(12, 0))
+        ttk.Label(box, wraplength=760, justify="left",
+                  foreground=theme.hint(), text=(
+                      "The religion the AI founds when it can (if no one "
+                      "has founded it yet). The project's own religions "
+                      "are on the Religions tab.")).grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        own = [(t, r.get("name") or t) for t, r in
+               self.app.project_religions().items()] \
+            if hasattr(self.app, "project_religions") else []
+        known = {t for t, _ in own}
+        choices = [(self.RELIGION_INHERIT, "(original leader's)"),
+                   (NO_RELIGION, "(none)")] + own + [
+            c for c in self.app.data.religion_choices() if c[0] not in known]
+        self.religion_combo = TypeCombo(
+            box, choices,
+            spec.get("favored_religion") or self.RELIGION_INHERIT, width=50)
+        self.religion_combo.grid(row=1, column=0, sticky="w", padx=6,
+                                 pady=3)
+        self.religion_info = ttk.Label(box, foreground=theme.hint())
+        self.religion_info.grid(row=1, column=1, sticky="w", padx=6)
+        self.religion_combo.var.trace_add(
+            "write", lambda *_: self._refresh_religion_info())
+        self.orig_var.trace_add("write",
+                                lambda *_: self._refresh_religion_info())
+        self._refresh_religion_info()
+
+    def _favored_religion(self):
+        religion = self.religion_combo.get_type()
+        return "" if religion == self.RELIGION_INHERIT else religion
+
+    def _refresh_religion_info(self):
+        text = ""
+        if not self._favored_religion():
+            orig = self._orig()
+            religion = (getattr(self.app.data, "favored_religions", None)
+                        or {}).get(orig)
+            text = ("= " + self.app.data.type_name("religion", religion)
+                    if religion else
+                    "= none" if not orig or self.app.data.conn else "")
+        self.religion_info.configure(text=text)
 
     def _refresh_ai_box(self):
         new = not self._orig()
@@ -1383,6 +1432,7 @@ class LeaderEditor(tk.Toplevel):
             "city_names": self.city_names(),
             "new_ability": self.new_ability(),
             "ai_traits": self.ai_traits(),
+            "favored_religion": self._favored_religion(),
             "scene_leader": self._scene_leader(),
             "load_fg_path": self.load_fg_path.get().strip(),
             "load_bg_path": self.load_bg_path.get().strip(),

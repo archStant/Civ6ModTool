@@ -97,6 +97,11 @@ def leader_custom_marks(spec):
 #   or the game's default scene without orig)
 # (older projects may also have greet_happy/neutral/unhappy)
 
+# favored_religion of a leader that favors no religion (not even its
+# original leader's)
+NO_RELIGION = "NONE"
+
+
 def new_leader_spec():
     return {
         "name": "", "sex": "Female", "civ": "", "orig": "",
@@ -111,6 +116,10 @@ def new_leader_spec():
         "mood_images": {},
         "moment_illustrations": [],
         "agenda": "", "agenda_name": "", "agenda_desc": "",
+        # the religion the AI founds when it can: "" = the original
+        # leader's (none without one), NO_RELIGION, a game religion type,
+        # or a project religion (favored_religion_id: its id)
+        "favored_religion": "", "favored_religion_id": "",
         "abilities": {},
         "city_names": [],
         "ai_traits": list(DEFAULT_AI_TRAITS), "scene_leader": "",
@@ -427,6 +436,9 @@ def normalize_spec(spec, data, prefix="", civs=None):
         "agenda_name": agenda_name,
         "agenda_desc": agenda_desc,
         "agenda_clone": bool(agenda_name or agenda_desc) and not own_agenda,
+        # "" = the original leader's favored religion; NO_RELIGION; or a
+        # religion type (the project's own resolved by modbuild)
+        "favored_religion": (spec.get("favored_religion") or "").strip(),
         # ... or an agenda of its own (see agendas.normalize_own_agenda;
         # its name and description are agenda_name / agenda_desc)
         "own_agenda": own_agenda,
@@ -649,6 +661,26 @@ SELECT
         leader_ability_desc=ability_config_column(
             c, "LeaderAbilityDescription", "desc"),
         portrait=portrait, portrait_bg=portrait_bg, items=items)
+
+
+def favored_religion_block(c):
+    """FavoredReligions SQL for one leader: its own pick, the original
+    leader's, or none."""
+    religion = c.get("favored_religion") or ""
+    if religion == NO_RELIGION or (not religion and not c.get("orig")):
+        return ""
+    if religion:
+        return ("-- the religion the AI founds when it can\n"
+                "INSERT INTO FavoredReligions (LeaderType, ReligionType)\n"
+                "VALUES ({}, {});\n".format(sql_str(c["slug"]),
+                                           sql_str(religion)))
+    return ("-- the religion the AI founds when it can: {orig}'s\n"
+            "INSERT INTO FavoredReligions (LeaderType, CivilizationType, "
+            "ReligionType)\n"
+            "SELECT {slug}, CivilizationType, ReligionType FROM "
+            "FavoredReligions WHERE LeaderType = {orig_s};\n").format(
+                orig=c["orig"], slug=sql_str(c["slug"]),
+                orig_s=sql_str(c["orig"]))
 
 
 def agenda_block(c):
@@ -905,7 +937,7 @@ FROM Leaders WHERE LeaderType = '{orig}';
 
 {capital}{city_names}
 {ability}
-{agenda}
+{agenda}{religion}
 -- Loading screen: this leader's own bio; images are custom or inherited
 INSERT INTO LoadingInfo (LeaderType, ForegroundImage, BackgroundImage, PlayDawnOfManAudio, EraText, LeaderText)
 SELECT '{slug}', {load_fg}, {load_bg}, PlayDawnOfManAudio, EraText, '{bio_tag}'
@@ -921,6 +953,7 @@ INSERT INTO DiplomacyInfo (Type, BackgroundImage)
 SELECT '{slug}', {diplo_bg}{diplo_from};
 {scene}""".format(name=c["name"], slug=c["slug"], name_tag=c["name_tag"],
            agenda=agenda_block(c), ability=ability_block(c),
+           religion=favored_religion_block(c),
            capital=capital_block(c),
            scene=scene_block(c),
            city_names=city_names_block(c),
@@ -948,7 +981,7 @@ VALUES ('{slug}', '{name_tag}', 'LEADER_DEFAULT', {sex}, 0);
 
 {capital}{city_names}
 {ability}
-{agenda}
+{agenda}{religion}
 -- Loading screen: this leader's own bio and images (none: an empty
 -- portrait)
 INSERT INTO LoadingInfo (LeaderType, ForegroundImage, BackgroundImage, PlayDawnOfManAudio, LeaderText)
@@ -963,6 +996,7 @@ INSERT INTO DiplomacyInfo (Type, BackgroundImage)
 VALUES ('{slug}', {diplo_bg});
 {scene}""".format(name=c["name"], slug=c["slug"], name_tag=c["name_tag"],
            agenda=agenda_block(c), ability=ability_block(c),
+           religion=favored_religion_block(c),
            capital=capital_block(c), scene=scene_block(c),
            city_names=city_names_block(c), sex=sql_str(c["sex"]),
            bio_tag=c["bio_tag"], quote_tag=c["quote_tag"],

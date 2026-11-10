@@ -20,8 +20,8 @@ import xml.etree.ElementTree as ET
 import zlib
 
 from civgen import (agendas, artdefs, civs, landmarks, leaders, modbuild,
-                    modifiers, moments, moods, project, unit_art, unit_models,
-                    uniques)
+                    modifiers, moments, moods, project, religions, unit_art,
+                    unit_models, uniques)
 from civgen.gamedata import GameData
 from civgen.util import find_game_cache, find_game_dir
 
@@ -296,8 +296,16 @@ class GeneratedModTest(unittest.TestCase):
         for sub in ("Config", "Gameplay", "Text"):
             os.makedirs(os.path.join(cls.mod_dir, sub))
         leader_specs, civ_specs = sample_project()
-        cls.civs, cls.ctxs, errors = modbuild.prepare_project(
-            leader_specs, civ_specs, game_data(), "TST")
+        # a religion with a spare icon of the game's and one with a game
+        # religion's icon
+        own = dict(religions.new_religion_spec(), name="Old Ways",
+                   color=(10, 200, 30))
+        sun = dict(religions.new_religion_spec(), name="Sun Cult",
+                   icon_from="RELIGION_SHINTO")
+        leader_specs[1]["favored_religion_id"] = own["id"]
+        leader_specs[4]["favored_religion"] = "RELIGION_ISLAM"
+        cls.civs, cls.ctxs, errors, cls.religions = modbuild.prepare_project(
+            leader_specs, civ_specs, game_data(), "TST", [own, sun])
         assert not errors, errors
         # custom files (advanced mode): a SQL file, and a script for
         # Gathering Storm only
@@ -317,7 +325,7 @@ class GeneratedModTest(unittest.TestCase):
         modbuild.write_mod("Test Mod", cls.ctxs, "TestMod", cls.mod_dir,
                            "guid", None, cls.report, lambda text: None,
                            cls.civs, game_data().type_name,
-                           extra_files=extra_files)
+                           extra_files=extra_files, religions=cls.religions)
 
     @classmethod
     def tearDownClass(cls):
@@ -331,6 +339,22 @@ class GeneratedModTest(unittest.TestCase):
             db.executescript(read(self.mod_dir, modbuild.XP2_FILE))
         self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
         q = lambda sql: db.execute(sql).fetchall()    # noqa: E731
+        self.assertEqual(q("SELECT ReligionType, Name, Pantheon, Color FROM "
+                           "Religions WHERE ReligionType LIKE '%TST%' "
+                           "ORDER BY 1"),
+                         [("RELIGION_TST_OLD_WAYS",
+                           "LOC_RELIGION_TST_OLD_WAYS_NAME", 0,
+                           "COLOR_RELIGION_TST_OLD_WAYS"),
+                          ("RELIGION_TST_SUN_CULT",
+                           "LOC_RELIGION_TST_SUN_CULT_NAME", 0,
+                           "COLOR_RELIGION_TST_SUN_CULT")])
+        # its own pick, a game religion, the original leader's
+        self.assertEqual(q("SELECT LeaderType, ReligionType FROM "
+                           "FavoredReligions WHERE LeaderType LIKE '%TST%' "
+                           "ORDER BY 1"),
+                         [("LEADER_TST_HIPPOLYTA", "RELIGION_TST_OLD_WAYS"),
+                          ("LEADER_TST_JEANNE", "RELIGION_CATHOLICISM"),
+                          ("LEADER_TST_LIBERTY", "RELIGION_ISLAM")])
         self.assertEqual(q("SELECT StartingCivilizationLevelType FROM "
                            "Civilizations WHERE CivilizationType = "
                            "'CIVILIZATION_TST_AMAZONS'"),
@@ -752,6 +776,24 @@ class GeneratedModTest(unittest.TestCase):
         missing = [t for t in used if "'{}'".format(t) not in text]
         self.assertEqual(missing, [])
 
+    def test_religion_moments_sql_runs(self):
+        db = database("DebugGameplay.sqlite", self.tmp)
+        self.addCleanup(db.close)
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name = "
+                          "'MomentIllustrations'").fetchall():
+            self.skipTest("the cache is not of Rise and Fall / Gathering "
+                          "Storm")
+        db.executescript(read(self.mod_dir, "Gameplay/NewLeader_Gameplay.sql"))
+        db.executescript(read(self.mod_dir, modbuild.MOMENTS_FILE))
+        self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
+        q = ("SELECT Texture FROM MomentIllustrations WHERE GameDataType = ? "
+             "AND MomentIllustrationType = 'MOMENT_ILLUSTRATION_RELIGION'")
+        for religion, source in (("RELIGION_TST_OLD_WAYS", "RELIGION_CUSTOM_1"),
+                                 ("RELIGION_TST_SUN_CULT", "RELIGION_SHINTO")):
+            self.assertEqual(db.execute(q, (religion,)).fetchall(),
+                             db.execute(q, (source,)).fetchall())
+            self.assertTrue(db.execute(q, (religion,)).fetchall())
+
     def test_icons_sql_runs(self):
         db = sqlite3.connect(":memory:")
         self.addCleanup(db.close)
@@ -764,7 +806,17 @@ class GeneratedModTest(unittest.TestCase):
             "32, 'x'); INSERT INTO IconDefinitions (Name, Atlas, \"Index\") "
             "VALUES ('ICON_UNIT_ROMAN_LEGION', 'ICON_ATLAS_UNITS', 34), "
             "('ICON_IMPROVEMENT_PAIRIDAEZA', 'ICON_ATLAS_UNITS', 7), "
-            "('ICON_CIVILIZATION_INCA', 'ICON_ATLAS_CIVILIZATION_INCA', 0);")
+            "('ICON_CIVILIZATION_INCA', 'ICON_ATLAS_CIVILIZATION_INCA', 0);"
+            # religion icons: in the small icons' atlas and their own
+            "INSERT INTO IconTextureAtlases (Name, IconSize, FileName) "
+            "VALUES ('ICON_ATLAS_RELIGIONS', 50, 'x'), "
+            "('ICON_ATLAS_RELIGIONS_SHINTO', 270, 'x'), "
+            "('ICON_ATLAS_RELIGIONS_CUSTOM_1', 270, 'x'); "
+            "INSERT INTO IconDefinitions (Name, Atlas, \"Index\") VALUES "
+            "('ICON_RELIGION_SHINTO', 'ICON_ATLAS_RELIGIONS', 10), "
+            "('ICON_RELIGION_SHINTO', 'ICON_ATLAS_RELIGIONS_SHINTO', 0), "
+            "('ICON_RELIGION_CUSTOM_1', 'ICON_ATLAS_RELIGIONS', 13), "
+            "('ICON_RELIGION_CUSTOM_1', 'ICON_ATLAS_RELIGIONS_CUSTOM_1', 0);")
         db.executescript(read(self.mod_dir, modbuild.ICONS_SQL_FILE))
         self.assertEqual(db.execute(
             "SELECT Atlas, \"Index\" FROM IconDefinitions WHERE Name = "
@@ -777,6 +829,15 @@ class GeneratedModTest(unittest.TestCase):
         self.assertEqual(db.execute(
             "SELECT \"Index\" FROM IconDefinitions WHERE Name = "
             "'ICON_IMPROVEMENT_TST_SACRED_GROVE'").fetchall(), [(7,)])
+        # every size of the religion's icon
+        for icon, source in (("ICON_RELIGION_TST_SUN_CULT", "SHINTO"),
+                             ("ICON_RELIGION_TST_OLD_WAYS", "CUSTOM_1")):
+            self.assertEqual(db.execute(
+                "SELECT Atlas, \"Index\" FROM IconDefinitions WHERE Name "
+                "= ? ORDER BY 1", (icon,)).fetchall(),
+                db.execute("SELECT Atlas, \"Index\" FROM IconDefinitions "
+                           "WHERE Name = ? ORDER BY 1",
+                           ("ICON_RELIGION_" + source,)).fetchall())
 
     def test_xml_files_parse(self):
         files = ["TestMod.modinfo", "TestMod.dep",
@@ -1620,7 +1681,7 @@ class MomentsTest(unittest.TestCase):
 
     def test_civ_moments(self):
         entry = {"item": "unit_tst_x", "path": MOMENT_IMAGE, "half": True}
-        civ_ctxs, ctxs, errors = modbuild.prepare_project(
+        civ_ctxs, ctxs, errors, _ = modbuild.prepare_project(
             [self.leader()], [self.civ(moment_illustrations=[entry])],
             self.NoData(), "TST")
         self.assertEqual(errors, [])
@@ -1632,7 +1693,7 @@ class MomentsTest(unittest.TestCase):
         self.assertIn("'UNIT_TST_X', "
                       "'MOMENT_CIVILIZATION_TST_AMAZONS_UNIT_TST_X.dds'", sql)
         # one picture per item, whoever has it
-        _, _, errors = modbuild.prepare_project(
+        _, _, errors, _ = modbuild.prepare_project(
             [self.leader(moment_illustrations=[entry])],
             [self.civ(moment_illustrations=[entry])], self.NoData(), "TST")
         self.assertEqual(len(errors), 1)
@@ -1905,7 +1966,7 @@ class MoodPortraitTest(unittest.TestCase):
         zip_path = os.path.join(self.tmp, "out.zip")
         project.export_leaders([spec], zip_path)
         os.remove(self.happy)           # imported elsewhere
-        specs, _, _ = project.import_leaders(zip_path)
+        specs, _, _, _ = project.import_leaders(zip_path)
         moved = specs[0]["mood_images"]["HAPPY"]
         self.assertNotEqual(moved, self.happy)
         self.assertTrue(os.path.isfile(moved))
@@ -2108,6 +2169,216 @@ class WorkshopTest(unittest.TestCase):
         self.assertTrue(any("Missing" in m for m in failed()))
 
 
+class ReligionTest(unittest.TestCase):
+    """New religions, and the religion a leader favors."""
+
+    class NoData:
+        conn = None
+        leader_meta = civ_names = {}
+
+        def abilities(self, leader):
+            return []
+
+        def all_abilities(self):
+            return []
+
+        def meta(self, leader):
+            return {}
+
+        def leader_unique_items(self, leader):
+            return []
+
+        def type_name(self, kind, type_name):
+            return ""
+
+    def religion(self, **spec):
+        return dict(religions.new_religion_spec(), name="Old Ways", **spec)
+
+    def test_normalize(self):
+        r = religions.normalize_religion(
+            self.religion(color=[1, 2, 3]), self.NoData(), "TST")
+        self.assertEqual((r["slug"], r["icon_name"], r["color_type"],
+                          r["color"], r["icon_custom"]),
+                         ("RELIGION_TST_OLD_WAYS",
+                          "ICON_RELIGION_TST_OLD_WAYS",
+                          "COLOR_RELIGION_TST_OLD_WAYS", (1, 2, 3), False))
+        self.assertIn("'LOC_RELIGION_TST_OLD_WAYS_NAME'",
+                      religions.religion_sql(r))
+        self.assertIn("'ICON_RELIGION_CUSTOM_1'",
+                      religions.religion_icons_sql(r))
+        self.assertIn("<Type>COLOR_RELIGION_TST_OLD_WAYS</Type>"
+                      "<Color>1,2,3,255</Color>",
+                      modbuild.build_colors_xml([], [r]))
+        for spec, message in ((dict(name=""), "no name"),
+                              (dict(icon_path="C:/nope.png"), "not found"),
+                              (dict(icon_from="CIVILIZATION_X"),
+                               "not a religion"),
+                              (dict(color=(1, 2)), "color")):
+            with self.assertRaisesRegex(ValueError, message):
+                religions.normalize_religion(dict(self.religion(), **spec),
+                                             self.NoData(), "TST")
+
+    def test_favored_religion_sql(self):
+        def block(**c):
+            return leaders.favored_religion_block(
+                dict({"slug": "LEADER_X", "orig": "LEADER_GILGAMESH"}, **c))
+        self.assertIn("WHERE LeaderType = 'LEADER_GILGAMESH'",
+                      block(favored_religion=""))
+        self.assertIn("VALUES ('LEADER_X', 'RELIGION_ISLAM')",
+                      block(favored_religion="RELIGION_ISLAM"))
+        self.assertEqual(block(favored_religion=leaders.NO_RELIGION), "")
+        self.assertEqual(block(favored_religion="", orig=""), "")
+
+    def test_prepare_project(self):
+        religion = self.religion()
+        lead = leaders.new_leader_spec()
+        lead.update(name="Q", civ="CIVILIZATION_SUMERIA",
+                    orig="LEADER_GILGAMESH",
+                    favored_religion_id=religion["id"])
+        _, ctxs, errors, found = modbuild.prepare_project(
+            [lead], [], self.NoData(), "TST", [religion])
+        self.assertEqual(errors, [])
+        self.assertEqual(ctxs[0]["favored_religion"], "RELIGION_TST_OLD_WAYS")
+        self.assertEqual([r["slug"] for r in found],
+                         ["RELIGION_TST_OLD_WAYS"])
+        # the religion it favored is gone
+        _, _, errors, _ = modbuild.prepare_project(
+            [lead], [], self.NoData(), "TST", [])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("no longer in the project", errors[0])
+        # two religions of one name
+        _, _, errors, _ = modbuild.prepare_project(
+            [], [], self.NoData(), "TST", [religion, self.religion()])
+        self.assertIn("duplicate type", errors[0])
+
+    def test_glow(self):
+        from PIL import Image, ImageDraw
+        img = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+        ImageDraw.Draw(img).line((50, 10, 50, 90), fill=(255, 255, 255, 255),
+                                 width=2)
+        self.assertIs(religions.add_glow(img, 0), img)
+        faint = religions.add_glow(img, 0.25).getchannel("A")
+        strong = religions.add_glow(img, 1.0).getchannel("A")
+        # around the line, not on it, and stronger with the strength
+        self.assertEqual(img.getchannel("A").getpixel((54, 50)), 0)
+        self.assertGreater(faint.getpixel((54, 50)), 0)
+        self.assertGreater(strong.getpixel((54, 50)),
+                           faint.getpixel((54, 50)))
+        self.assertEqual(strong.getpixel((50, 50)), 255)
+        self.assertEqual(strong.getpixel((90, 50)), 0)      # far away
+        # only an image of its own glows; strength is 1-100
+        no_data = self.NoData()
+        own = religions.normalize_religion(self.religion(
+            icon_path=MOMENT_IMAGE, glow=True, glow_strength=250),
+            no_data, "TST")
+        self.assertEqual(own["icon_glow"], 1.0)
+        for spec in (dict(icon_path=MOMENT_IMAGE, glow=False),
+                     dict(icon_from="RELIGION_ISLAM", glow=True)):
+            self.assertEqual(religions.normalize_religion(
+                self.religion(**spec), no_data, "TST")["icon_glow"], 0.0)
+        self.assertEqual(religions.glowing_icon(MOMENT_IMAGE, 50, 0.5).size,
+                         (50, 50))
+
+    def test_civilopedia(self):
+        r = religions.normalize_religion(self.religion(pedia={
+            "history": "First line\nsame paragraph.\n\n\nSecond."}),
+            self.NoData(), "TST")
+        page = "LOC_PEDIA_RELIGIONS_PAGE_RELIGION_TST_OLD_WAYS_CHAPTER_" \
+               "HISTORY_PARA_"
+        self.assertEqual(religions.religion_text_rows(r), [
+            ("LOC_RELIGION_TST_OLD_WAYS_NAME", "Old Ways"),
+            (page + "1", "First line[NEWLINE]same paragraph."),
+            (page + "2", "Second.")])
+        # none written: the page is just empty (older projects too)
+        spec = self.religion()
+        del spec["pedia"]
+        self.assertEqual(len(religions.religion_text_rows(
+            religions.normalize_religion(spec, self.NoData(), "TST"))), 1)
+
+    def test_moment_picture(self):
+        tmp = tempfile.mkdtemp(prefix="civgen_rel_")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        ink = religions.religion_moment_ink(MOMENT_IMAGE)
+        self.assertEqual(ink.size, religions.RELIGION_MOMENT_SIZE)
+        left, top, right, bottom = ink.getbbox()
+        # on the book's left page, foreshortened, in faded ink
+        self.assertTrue(30 <= left and right <= 145 and 15 <= top and
+                        bottom <= 100, ink.getbbox())
+        self.assertLessEqual(ink.getchannel("A").getextrema()[1], 220)
+        self.assertEqual(ink.tobytes(),
+                         religions.religion_moment_ink(MOMENT_IMAGE)
+                         .tobytes())        # the same every build
+        no_data = self.NoData()
+
+        def moments(**spec):
+            r = religions.normalize_religion(self.religion(**spec), no_data,
+                                             "TST")
+            return r, r["moments"]
+        # automatic: the icon image in ink...
+        _, (m,) = moments(icon_path=MOMENT_IMAGE)
+        self.assertEqual((m["ink"], m["path"], m["texture"], m["size"],
+                          m["illustration"]),
+                         (MOMENT_IMAGE, "", "MOMENT_RELIGION_TST_OLD_WAYS",
+                          (166, 122), "MOMENT_ILLUSTRATION_RELIGION"))
+        # ... or a game religion's picture
+        r, found = moments(icon_from="RELIGION_SHINTO")
+        self.assertEqual((found, r["moment_from"]), ([], "RELIGION_SHINTO"))
+        self.assertIn("WHERE GameDataType = 'RELIGION_SHINTO'",
+                      religions.religion_moment_sql(r))
+        self.assertIn("'RELIGION_CUSTOM_1'", religions.religion_moment_sql(
+            moments()[0]))
+        # an own image (with the usual options)
+        _, (m,) = moments(icon_from="RELIGION_SHINTO", moment={
+            "path": MOMENT_IMAGE, "sepia": True})
+        self.assertEqual((m["path"], m["ink"], m["sepia"], m["mask"]),
+                         (MOMENT_IMAGE, "", True, False))
+        with self.assertRaisesRegex(ValueError, "historic moment image"):
+            moments(moment={"path": os.path.join(tmp, "gone.png")})
+        sql = modbuild.build_moments_sql([], [
+            religions.normalize_religion(self.religion(
+                icon_path=MOMENT_IMAGE), no_data, "TST"), r])
+        self.assertIn("'RELIGION_TST_OLD_WAYS', "
+                      "'MOMENT_RELIGION_TST_OLD_WAYS.dds'", sql)
+        self.assertIn("-- Old Ways: the historic moment picture of "
+                      "RELIGION_SHINTO", sql)
+
+    def test_opacity(self):
+        from PIL import Image
+        img = Image.new("RGBA", (4, 4), (255, 255, 255, 200))
+        self.assertIs(religions.fade(img, 1.0), img)
+        self.assertEqual(religions.fade(img, 0.5).getpixel((0, 0)),
+                         (255, 255, 255, 100))
+        no_data = self.NoData()
+
+        def opacity(**spec):
+            return religions.normalize_religion(
+                self.religion(**spec), no_data, "TST")["icon_opacity"]
+        self.assertEqual(opacity(icon_path=MOMENT_IMAGE), 1.0)   # default
+        self.assertEqual(opacity(icon_path=MOMENT_IMAGE, opacity=40), 0.4)
+        self.assertEqual(opacity(icon_path=MOMENT_IMAGE, opacity=0), 0.1)
+        self.assertEqual(opacity(icon_from="RELIGION_ISLAM", opacity=40),
+                         1.0)               # only an image of its own
+        solid = religions.glowing_icon(MOMENT_IMAGE, 50, 0.5)
+        faded = religions.glowing_icon(MOMENT_IMAGE, 50, 0.5, 0.5)
+        self.assertEqual(faded.getchannel("A").getextrema()[1],
+                         round(solid.getchannel("A").getextrema()[1] * 0.5))
+
+    def test_modinfo_teaser(self):
+        self.assertEqual(modbuild.modinfo_teaser(False, True, False),
+                         "New religions")
+        self.assertEqual(modbuild.modinfo_teaser(True, True),
+                         "New civilizations and leaders and new religions")
+
+    def test_export_round_trip(self):
+        tmp = tempfile.mkdtemp(prefix="civgen_rel_")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        religion = self.religion(icon_path=MOMENT_IMAGE, color=(1, 2, 3))
+        path = os.path.join(tmp, "x.altleaders")
+        self.assertEqual(project.export_leaders([], path, (), [religion]), [])
+        _, _, _, found = project.import_leaders(path)
+        self.assertEqual(found, [religion])     # (the image is still there)
+
+
 class ProjectFileTest(unittest.TestCase):
     """Projects are saved as JSON (*.civmod); older pickled *.altleader
     projects still open."""
@@ -2123,7 +2394,10 @@ class ProjectFileTest(unittest.TestCase):
                         "leaders": leaders, "civs": civs,
                         "workshop": {"version": 2},
                         "extra_files": [modbuild.new_custom_file(
-                            "C:/mine/Rules.sql")]}
+                            "C:/mine/Rules.sql")],
+                        "religions": [dict(religions.new_religion_spec(),
+                                           name="Old Ways",
+                                           color=(1, 2, 3))]}
 
     def test_round_trip(self):
         path = os.path.join(self.tmp, "a" + project.PROJECT_EXT)
@@ -2136,6 +2410,7 @@ class ProjectFileTest(unittest.TestCase):
         self.assertEqual(version, project.PROJECT_VERSION)
         self.assertEqual(loaded, self.project)  # tuples are tuples again
         self.assertIsInstance(loaded["leaders"][0]["primary"], tuple)
+        self.assertIsInstance(loaded["religions"][0]["color"], tuple)
         self.assertFalse(os.path.exists(path + ".tmp"))
         self.assertEqual(project.project_path_for(path), path)
 
@@ -2144,12 +2419,13 @@ class ProjectFileTest(unittest.TestCase):
         old = dict(self.project, magic=project.LEGACY_MAGIC, version=3)
         del old["civs"]                         # older still: no civs
         del old["extra_files"]                  # (nor custom files)
+        del old["religions"]                    # (nor religions)
         path = os.path.join(self.tmp, "old" + project.LEGACY_EXT)
         with open(path, "wb") as fh:
             pickle.dump(old, fh)
         loaded, version = project.load_project(path)
-        self.assertEqual((version, loaded["civs"], loaded["extra_files"]),
-                         (3, [], []))
+        self.assertEqual((version, loaded["civs"], loaded["extra_files"],
+                          loaded["religions"]), (3, [], [], []))
         self.assertEqual(project.project_path_for(path),
                          os.path.join(self.tmp, "old" + project.PROJECT_EXT))
         # a pickle under another name is never unpickled
@@ -2282,7 +2558,7 @@ class ReferenceTest(unittest.TestCase):
             {"item": "UNIT_TST_NOT_THERE", "path": MOMENT_IMAGE}]
         self.civs[0]["uniques"][4]["stats"]["PrereqDistrict"] = \
             "DISTRICT_TST_GONE"
-        _, _, errors = modbuild.prepare_project(
+        _, _, errors, _ = modbuild.prepare_project(
             self.leaders, self.civs, game_data() if CACHE else
             self.NoData(), "TST")
         self.assertTrue(any("UNIT_TST_NOT_THERE" in e for e in errors)
@@ -2839,7 +3115,7 @@ class EffectGameDataTest(unittest.TestCase):
         leader_specs, civ_specs = sample_project()
         civ_specs[0]["ability"]["effects"].append(
             modifiers.new_raw_effect("MODIFIER_NOPE"))
-        _, _, errors = modbuild.prepare_project(leader_specs, civ_specs,
+        _, _, errors, _ = modbuild.prepare_project(leader_specs, civ_specs,
                                                 game_data(), "TST")
         self.assertIn("Amazons (civilization ability): effect 5 - the game "
                       "has no modifier type MODIFIER_NOPE",
@@ -2851,7 +3127,7 @@ class EffectGameDataTest(unittest.TestCase):
         leader_specs[1]["new_ability"]["effects"].append(
             modifiers.new_raw_effect("MODIFIER_PLAYER_GRANT_YIELD",
                                      {"Amount": ""}))
-        _, _, errors = modbuild.prepare_project(leader_specs, civ_specs,
+        _, _, errors, _ = modbuild.prepare_project(leader_specs, civ_specs,
                                                 game_data(), "TST")
         text = "\n".join(errors)
         self.assertIn("Temple of Ares (Amazons): effect 2 - ", text)
@@ -2863,7 +3139,7 @@ class EffectGameDataTest(unittest.TestCase):
         twin = uniques.new_unique_spec("unit")
         twin.update(name="Amazon Warrior", base="UNIT_SWORDSMAN")
         leader_specs[0]["uniques"].append(twin)
-        _, _, errors = modbuild.prepare_project(leader_specs, civ_specs,
+        _, _, errors, _ = modbuild.prepare_project(leader_specs, civ_specs,
                                                 game_data(), "TST")
         self.assertIn("Jeanne: duplicate type UNIT_TST_AMAZON_WARRIOR "
                       "(already used by Amazons)", "\n".join(errors))
@@ -2874,7 +3150,7 @@ class EffectGameDataTest(unittest.TestCase):
         twin.update(name="Amazon Warrior", base="BUILDING_LIBRARY",
                     effects=[modifiers.new_effect("tourism")])
         civ_specs[0]["uniques"].append(twin)
-        _, _, errors = modbuild.prepare_project(leader_specs, civ_specs,
+        _, _, errors, _ = modbuild.prepare_project(leader_specs, civ_specs,
                                                 game_data(), "TST")
         self.assertIn("both have effects and the same name",
                       "\n".join(errors))

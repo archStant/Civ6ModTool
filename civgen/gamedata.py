@@ -29,7 +29,20 @@ TYPE_KINDS = {
     "great_person": ("GreatPersonClasses", "GreatPersonClassType",
                      "GreatPersonClassType"),
     "ability": ("UnitAbilities", "UnitAbilityType", "UnitAbilityType"),
+    # (without the pantheon, see _load_types)
+    "religion": ("Religions", "ReligionType", "rowid"),
 }
+# The base game's religions: for the religion dropdowns without the cache
+FALLBACK_RELIGIONS = [
+    ("RELIGION_BUDDHISM", "Buddhism"), ("RELIGION_CATHOLICISM", "Catholicism"),
+    ("RELIGION_CONFUCIANISM", "Confucianism"),
+    ("RELIGION_HINDUISM", "Hinduism"), ("RELIGION_ISLAM", "Islam"),
+    ("RELIGION_JUDAISM", "Judaism"),
+    ("RELIGION_ORTHODOXY", "Eastern Orthodoxy"),
+    ("RELIGION_PROTESTANTISM", "Protestantism"),
+    ("RELIGION_SHINTO", "Shinto"), ("RELIGION_SIKHISM", "Sikhism"),
+    ("RELIGION_TAOISM", "Taoism"),
+    ("RELIGION_ZOROASTRIANISM", "Zoroastrianism")]
 # What in the game has modifiers whose effects the effect editor can
 # copy: source -> (table linking an item to its modifiers, item column,
 # item table, label)
@@ -301,6 +314,7 @@ class GameData:
         self.civ_abilities = {}
         self.civ_names = {}     # CivilizationType -> English name
         self.types = {}         # TYPE_KINDS key -> [(type, English name)]
+        self.favored_religions = {}     # LeaderType -> ReligionType
         # "unit" / "building" / "district" -> {type: {column: value, ...,
         # "name": English name, "replaces": type or None}}
         self.items = {}
@@ -529,11 +543,19 @@ class GameData:
             if kind == "civilization":
                 where = (" WHERE StartingCivilizationLevelType = "
                          "'CIVILIZATION_LEVEL_FULL_CIV'")
+            elif kind == "religion":
+                where = " WHERE Pantheon = 0"
             self.types[kind] = [
                 (t, self._name(name, t)) for t, name in self._query(
                     'SELECT {}, Name FROM "{}"{} ORDER BY {}'.format(
                         column, table, where, order))]
         self.civ_names = dict(self.types.get("civilization", []))
+        # the religion each of the game's leaders prefers (the AI founds
+        # it when it can)
+        self.favored_religions = {
+            leader: religion for leader, religion in self._query(
+                "SELECT LeaderType, ReligionType FROM FavoredReligions "
+                "WHERE LeaderType IS NOT NULL ORDER BY rowid")}
         # features that are not natural wonders (district placement)
         self.types["plain_feature"] = [
             (t, self._name(name, t)) for t, name in self._query(
@@ -660,13 +682,19 @@ class GameData:
                        if not (items.get(t) or {}).get("IsWonder")]
         return choices
 
+    def religion_choices(self):
+        """[(type, English name)] of the game's religions (the base
+        game's without the cache)."""
+        return self.type_choices("religion") or list(FALLBACK_RELIGIONS)
+
     def type_name(self, kind, type_name):
         """English name of a type, or a readable stand-in."""
         if kind in ITEM_TABLES:
             row = (self.items.get(kind) or {}).get(type_name)
             if row:
                 return row["name"]
-        for t, name in self.types.get(kind) or []:
+        for t, name in (self.types.get(kind) or
+                        (FALLBACK_RELIGIONS if kind == "religion" else [])):
             if t == type_name:
                 return name
         return type_display_name(type_name) if type_name else ""

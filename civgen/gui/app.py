@@ -21,6 +21,8 @@ from ..leaders import (CUSTOM_MARKS, leader_custom_marks, leader_icon_preview,
                        needs_art, new_leader_spec)
 from ..civs import (CIV_BADGE_COLOR, civ_icon_preview, civ_slug,
                     new_civ_spec)
+from ..religions import (new_religion_spec, religion_icon_preview,
+                         religion_slug)
 from ..uniques import KINDS, MAIN_TABLES
 from ..modbuild import (all_uniques, check_extra_files, prepare_project,
                         write_mod)
@@ -39,6 +41,7 @@ from .widgets import BusyDialog, Tooltip, add_tooltip
 from .workshop_dialog import WorkshopDialog
 from .leader_editor import LeaderEditor
 from .civ_editor import CivEditor
+from .religion_editor import ReligionEditor
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +102,7 @@ class GeneratorApp(tk.Tk):
             "guid": str(uuid.uuid4()),
             "leaders": [],
             "civs": [],
+            "religions": [],
             # Steam Workshop details (see workshop.py)
             "workshop": new_workshop_spec(),
             # files of the user's own (see modbuild.check_extra_files)
@@ -151,6 +155,33 @@ class GeneratorApp(tk.Tk):
             spec["civ_id"] = civ.get("id")
         else:
             spec.pop("civ_id", None)
+        return spec
+
+    def project_religions(self):
+        """{type: spec} of the project's religions (types follow the
+        current name and prefix)."""
+        return {religion_slug(spec, self.type_prefix()): spec
+                for spec in self.project.get("religions") or []}
+
+    def resolve_religion(self, spec):
+        """A leader spec's favored religion: a project religion's current
+        type (by favored_religion_id), or the favored_religion field."""
+        rid = spec.get("favored_religion_id")
+        if rid:
+            for religion_type, religion in self.project_religions().items():
+                if religion.get("id") == rid:
+                    return religion_type
+        return spec.get("favored_religion", "")
+
+    def _link_religion(self, spec):
+        """Remember which project religion (if any) a leader favors, so
+        renaming it keeps the link."""
+        religion = self.project_religions().get(
+            (spec.get("favored_religion") or "").strip())
+        if religion is not None:
+            spec["favored_religion_id"] = religion.get("id")
+        else:
+            spec.pop("favored_religion_id", None)
         return spec
 
     def all_leaders(self):
@@ -379,11 +410,14 @@ class GeneratorApp(tk.Tk):
         notebook.grid(row=1, column=0, sticky="nsew")
         leader_tab = ttk.Frame(notebook, padding=6)
         civ_tab = ttk.Frame(notebook, padding=6)
+        religion_tab = ttk.Frame(notebook, padding=6)
         notebook.add(leader_tab, text="Leaders")
         notebook.add(civ_tab, text="Civilizations")
+        notebook.add(religion_tab, text="Religions")
         leader_tab.columnconfigure(0, weight=1)
         leader_tab.rowconfigure(0, weight=1)
         self._build_civ_tab(civ_tab)
+        self._build_religion_tab(religion_tab)
         top.columnconfigure(0, weight=1)
         top.rowconfigure(1, weight=1)
 
@@ -499,6 +533,36 @@ class GeneratorApp(tk.Tk):
                           ("Remove", self.on_remove_civ)):
             ttk.Button(btns, text=text, command=cmd).pack(fill="x", pady=2)
 
+    def _build_religion_tab(self, tab):
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(0, weight=1)
+        self.religion_tree = ttk.Treeview(tab, columns=("type", "favored"),
+                                          show="tree headings", height=8,
+                                          selectmode="browse",
+                                          style="Leaders.Treeview")
+        self.religion_tree.heading("#0", text="Religion")
+        self.religion_tree.column("#0", width=230)
+        self.religion_tree.heading("type", text="Type")
+        self.religion_tree.column("type", width=230)
+        self.religion_tree.heading("favored", text="Favored by")
+        self.religion_tree.column("favored", width=260)
+        self.religion_tree.grid(row=0, column=0, sticky="nsew")
+        self.religion_tree.bind("<Double-1>",
+                                lambda e: self.on_edit_religion())
+        ttk.Label(tab, foreground=theme.hint(), wraplength=640, justify="left",
+                  text="New religions are offered on the religion founding "
+                       "screen next to the game's own. A leader can favor "
+                       "one (the AI founds it when it can): pick it on the "
+                       "leader's Agenda tab.").grid(row=1, column=0,
+                                                    sticky="w", pady=(3, 0))
+        btns = ttk.Frame(tab)
+        btns.grid(row=0, column=1, sticky="n", padx=(8, 0))
+        for text, cmd in (("Add...", self.on_add_religion),
+                          ("Edit...", self.on_edit_religion),
+                          ("Duplicate", self.on_duplicate_religion),
+                          ("Remove", self.on_remove_religion)):
+            ttk.Button(btns, text=text, command=cmd).pack(fill="x", pady=2)
+
     # -- unsaved-changes tracking ----------------------------------------------
 
     def _project_state(self):
@@ -510,7 +574,8 @@ class GeneratorApp(tk.Tk):
             self.type_prefix(), self.out_var.get().strip(),
             self.project["leaders"], self.project["civs"],
             self.project.get("workshop"),
-            self.project.get("extra_files") or []])
+            self.project.get("extra_files") or [],
+            self.project.get("religions") or []])
 
     def _mark_saved(self):
         """The current state is what is on disk (or a fresh project)."""
@@ -585,6 +650,7 @@ class GeneratorApp(tk.Tk):
     def _refresh_lists(self):
         self._refresh_leader_list()
         self._refresh_civ_list()
+        self._refresh_religion_list()
         if hasattr(self, "custom_label"):
             self._refresh_custom_note()
 
@@ -627,6 +693,34 @@ class GeneratorApp(tk.Tk):
             tree.selection_set(selected)
         self._update_save_button()
 
+    def _refresh_religion_list(self):
+        tree = self.religion_tree
+        selected = tree.selection()
+        tree.delete(*tree.get_children())
+        self._religion_icons = []
+        favored = {}
+        for spec in self.project["leaders"]:
+            favored.setdefault(self.resolve_religion(spec), []).append(
+                spec.get("name", ""))
+        for i, spec in enumerate(self.project.get("religions") or []):
+            religion_type = religion_slug(spec, self.type_prefix())
+            photo = ""
+            try:
+                from PIL import ImageTk
+                photo = ImageTk.PhotoImage(religion_icon_preview(
+                    spec, theme.scaled(LIST_ICON_SIZE)))
+                self._religion_icons.append(photo)
+            except ImportError:         # no Pillow: names only
+                pass
+            tree.insert("", "end", iid=str(i), image=photo,
+                        text="  " + spec.get("name", ""),
+                        values=(religion_type,
+                                ", ".join(favored.get(religion_type, []))
+                                or "(no leader)"))
+        if selected and tree.exists(selected[0]):
+            tree.selection_set(selected)
+        self._update_save_button()
+
     def _on_tree_motion(self, event):
         """Explain the Custom column's symbols under the mouse."""
         text = ""
@@ -655,10 +749,13 @@ class GeneratorApp(tk.Tk):
         return sorted(int(iid) for iid in self.tree.selection())
 
     def _edit_dialog(self, spec, title):
-        spec = dict(spec, civ=self.resolve_civ(spec))
+        spec = dict(spec, civ=self.resolve_civ(spec),
+                    favored_religion=self.resolve_religion(spec))
         editor = LeaderEditor(self, spec, title=title)
         self.wait_window(editor)
-        return self._link_civ(editor.result) if editor.result else None
+        if not editor.result:
+            return None
+        return self._link_religion(self._link_civ(editor.result))
 
     def on_add_leader(self):
         result = self._edit_dialog(new_leader_spec(), "Add leader")
@@ -767,6 +864,73 @@ class GeneratorApp(tk.Tk):
         del self.project["civs"][i]
         self._refresh_lists()
 
+    # -- religion list ---------------------------------------------------------
+
+    def _selected_religion(self):
+        sel = self.religion_tree.selection()
+        if not sel:
+            messagebox.showinfo("No selection",
+                                "Select a religion in the list first.")
+            return None
+        return int(sel[0])
+
+    def _religion_dialog(self, spec, title):
+        editor = ReligionEditor(self, spec, title=title)
+        self.wait_window(editor)
+        return editor.result
+
+    def on_add_religion(self):
+        result = self._religion_dialog(new_religion_spec(), "Add religion")
+        if result:
+            religions = self.project.setdefault("religions", [])
+            religions.append(result)
+            self._refresh_lists()
+            self.religion_tree.selection_set(str(len(religions) - 1))
+
+    def on_edit_religion(self):
+        i = self._selected_religion()
+        if i is None:
+            return
+        spec = self.project["religions"][i]
+        result = self._religion_dialog(spec, "Edit " + spec.get("name", ""))
+        if result:
+            self.project["religions"][i] = result
+            self._refresh_lists()
+            self.religion_tree.selection_set(str(i))
+
+    def on_duplicate_religion(self):
+        i = self._selected_religion()
+        if i is None:
+            return
+        spec = copy.deepcopy(self.project["religions"][i])
+        spec["name"] = (spec.get("name") or "Religion") + " copy"
+        spec["id"] = str(uuid.uuid4())
+        self.project["religions"].insert(i + 1, spec)
+        self._refresh_lists()
+        self.religion_tree.selection_set(str(i + 1))
+
+    def on_remove_religion(self):
+        i = self._selected_religion()
+        if i is None:
+            return
+        spec = self.project["religions"][i]
+        rid = spec.get("id")
+        favoring = [s for s in self.project["leaders"]
+                    if rid and s.get("favored_religion_id") == rid]
+        if not messagebox.askyesno(
+                "Remove religion",
+                "Remove {}{}?".format(spec.get("name", ""), (
+                    " (its leaders {} then favor their original leader's "
+                    "religion)".format(", ".join(
+                        s.get("name", "") for s in favoring))
+                    if favoring else ""))):
+            return
+        for s in favoring:
+            s.pop("favored_religion_id", None)
+            s["favored_religion"] = ""
+        del self.project["religions"][i]
+        self._refresh_lists()
+
     def on_export_leaders(self):
         """Export the selected leaders (all of them, and every
         civilization, if none is selected) with their images and the
@@ -774,13 +938,17 @@ class GeneratorApp(tk.Tk):
         project."""
         leaders = self.project["leaders"]
         specs = [leaders[i] for i in self._selected_indices()] or leaders
-        if not specs and not self.project["civs"]:
+        if not specs and not self.project["civs"] and \
+                not self.project.get("religions"):
             messagebox.showinfo("No leaders",
                                 "The project has no leaders to export.")
             return
         ids = {s.get("civ_id") for s in specs}
         civs = [c for c in self.project["civs"]
                 if specs is leaders or c.get("id") in ids]
+        favored = {s.get("favored_religion_id") for s in specs}
+        religions = [r for r in self.project.get("religions") or []
+                     if specs is leaders or r.get("id") in favored]
         name = specs[0].get("name") if len(specs) == 1 and not civs \
             else self.mod_name_var.get()
         path = filedialog.asksaveasfilename(
@@ -791,13 +959,14 @@ class GeneratorApp(tk.Tk):
         if not path:
             return
         try:
-            missing = export_leaders(specs, path, civs)
+            missing = export_leaders(specs, path, civs, religions)
         except (OSError, zipfile.BadZipFile) as exc:
             messagebox.showerror("Could not export leaders", str(exc))
             return
-        message = "Exported {} leader(s){} to:\n{}".format(
-            len(specs), " and {} civilization(s)".format(len(civs))
-            if civs else "", path)
+        message = "Exported {} leader(s){}{} to:\n{}".format(
+            len(specs), ", {} civilization(s)".format(len(civs))
+            if civs else "", ", {} religion(s)".format(len(religions))
+            if religions else "", path)
         if missing:
             message += ("\n\n{} image(s) were not found and are not "
                         "included:\n{}".format(len(missing),
@@ -815,7 +984,8 @@ class GeneratorApp(tk.Tk):
         if not path:
             return
         try:
-            specs, civ_specs, version = import_leaders(path)
+            specs, civ_specs, version, religion_specs = import_leaders(
+                path)
         except (ValueError, OSError) as exc:
             messagebox.showerror("Could not import leaders", str(exc))
             return
@@ -832,6 +1002,10 @@ class GeneratorApp(tk.Tk):
         civ_ids = {c.get("id"): i for i, c in enumerate(self.project["civs"])}
         clashes += [c.get("name") for c in civ_specs
                     if c.get("id") in civ_ids]
+        religions = self.project.setdefault("religions", [])
+        religion_ids = {r.get("id"): i for i, r in enumerate(religions)}
+        clashes += [r.get("name") for r in religion_specs
+                    if r.get("id") in religion_ids]
         replace = False
         if clashes:
             replace = messagebox.askyesnocancel(
@@ -867,19 +1041,33 @@ class GeneratorApp(tk.Tk):
             else:
                 continue
             civ_count += 1
+        religion_count = 0
+        for religion in religion_specs:
+            i = religion_ids.get(religion.get("id"))
+            if i is None:
+                religions.append(religion)
+            elif replace:
+                religions[i] = religion
+            else:
+                continue
+            religion_count += 1
         self._refresh_lists()
         self.tree.selection_set([str(i) for i in changed])
         messagebox.showinfo(
             "Leaders imported",
             "Imported {} of {} leader(s){}.".format(
                 len(changed), len(specs),
-                " and {} of {} civilization(s)".format(
-                    civ_count, len(civ_specs)) if civ_specs else ""))
+                ", {} of {} civilization(s)".format(
+                    civ_count, len(civ_specs)) if civ_specs else "") +
+            (" and {} of {} religion(s)".format(
+                religion_count, len(religion_specs))
+             if religion_specs else ""))
 
     # -- project save / load ----------------------------------------------------
 
     def on_new_project(self):
-        if (self.project["leaders"] or self.project["civs"]) and \
+        if (self.project["leaders"] or self.project["civs"] or
+                self.project.get("religions")) and \
                 not messagebox.askyesno(
                     "New project",
                     "Discard the current project and start fresh?"):
@@ -990,9 +1178,12 @@ class GeneratorApp(tk.Tk):
             return
         self._mark_saved()
         messagebox.showinfo("Project saved",
-                            "Saved {} leader(s) and {} civilization(s) "
-                            "to:\n{}".format(len(self.project["leaders"]),
-                                             len(self.project["civs"]), path))
+                            "Saved {} leader(s), {} civilization(s) and {} "
+                            "religion(s) to:\n{}".format(
+                                len(self.project["leaders"]),
+                                len(self.project["civs"]),
+                                len(self.project.get("religions") or []),
+                                path))
 
     def on_save_project_as(self):
         """Save under a new file name (the project then lives there)."""
@@ -1077,15 +1268,16 @@ class GeneratorApp(tk.Tk):
         if not out_root:
             messagebox.showwarning("Missing input", "Choose an output folder.")
             return False
-        if not self.project["leaders"]:
+        if not self.project["leaders"] and not self.project.get("religions"):
             messagebox.showwarning("No leaders",
-                                   "Add at least one leader to the project.")
+                                   "Add at least one leader (or religion) "
+                                   "to the project.")
             return False
 
         # 1) validate everything up front; collect every problem
-        civs, ctxs, errors = prepare_project(
+        civs, ctxs, errors, religions = prepare_project(
             self.project["leaders"], self.project["civs"], self.data,
-            self.type_prefix())
+            self.type_prefix(), self.project.get("religions") or [])
         extra_files, file_errors = check_extra_files(
             self.project.get("extra_files"))
         errors += file_errors
@@ -1094,7 +1286,8 @@ class GeneratorApp(tk.Tk):
                                    "\n\n".join(errors))
             return False
         existing = ["{} ({})".format(c["name"], c["slug"])
-                    for c in civs + ctxs if c["exists_in_game"]]
+                    for c in civs + ctxs + religions
+                    if c["exists_in_game"]]
         if existing and not messagebox.askyesno(
                 "Already in the game data",
                 "These types already exist in the loaded game data:"
@@ -1127,7 +1320,8 @@ class GeneratorApp(tk.Tk):
         # may ask for the cooker - dialogs must happen before the worker
         wants_art = any(needs_art(c) for c in ctxs) or \
             any(cc["icon_custom"] for cc in civs) or \
-            any(u["icon_custom"] for u in all_uniques(civs, ctxs))
+            any(u["icon_custom"] for u in all_uniques(civs, ctxs)) or \
+            any(r["icon_custom"] for r in religions)
         cooker = self._cooker_path() if wants_art else None
 
         # 3) convert, cook and write in a thread behind a progress window
@@ -1139,7 +1333,7 @@ class GeneratorApp(tk.Tk):
                 busy.set_status, civs, self.data.type_name,
                 {"version": publish["version"], "author": publish["author"],
                  "description": plain_text(publish["description"])},
-                stamp, extra_files))
+                stamp, extra_files, religions))
         except OSError as exc:
             messagebox.showerror("Could not write mod", str(exc))
             return False
@@ -1153,10 +1347,10 @@ class GeneratorApp(tk.Tk):
         if messagebox.askyesno(
                 "Done",
                 "Mod written to:\n{}\n\n{} file operation(s), {} "
-                "civilization(s), {} leader(s), {} custom icon(s).{}\n\n"
-                "Open the folder now?".format(
-                    mod_dir, len(report), len(civs), len(ctxs), icon_count,
-                    warning_text)):
+                "civilization(s), {} leader(s), {} religion(s), {} custom "
+                "icon(s).{}\n\nOpen the folder now?".format(
+                    mod_dir, len(report), len(civs), len(ctxs),
+                    len(religions), icon_count, warning_text)):
             self._open_folder(mod_dir)
         return True
 
@@ -1188,6 +1382,7 @@ class GeneratorApp(tk.Tk):
     def build_stamp(self):
         """A hash of everything the generated mod is made from."""
         publish = self.publish_values()
+        religions = self.project.get("religions") or []
         # (a custom file changed since is as new as an edited leader)
         custom = [dict(f, mtime=os.path.getmtime(f["path"])
                        if os.path.isfile(f.get("path") or "") else None)
@@ -1195,8 +1390,9 @@ class GeneratorApp(tk.Tk):
         return build_stamp(self._project_state()[:2],
                            self.project["leaders"], self.project["civs"],
                            publish["version"], publish["author"],
-                           publish["description"], *([custom] if custom
-                                                     else []))
+                           publish["description"],
+                           *([custom] if custom else []),
+                           *([religions] if religions else []))
 
     def uploader_path(self, ask=True):
         """The SDK's Workshop uploader: remembered, found, or asked for."""

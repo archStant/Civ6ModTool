@@ -76,6 +76,11 @@ def load_project(path):
             isinstance(c, dict) and "name" in c for c in project["civs"]):
         raise ValueError("The project contains a malformed civilization "
                          "entry.")
+    project.setdefault("religions", [])     # projects before religions
+    if not isinstance(project["religions"], list) or not all(
+            isinstance(r, dict) and "name" in r
+            for r in project["religions"]):
+        raise ValueError("The project contains a malformed religion entry.")
     # files of the user's own added to the mod (see
     # modbuild.check_extra_files)
     project.setdefault("extra_files", [])
@@ -84,7 +89,8 @@ def load_project(path):
             for f in project["extra_files"]):
         raise ValueError("The project contains a malformed custom file "
                          "entry.")
-    for spec in project["leaders"]:     # JSON turned the tuples into lists
+    # JSON turned the tuples into lists
+    for spec in project["leaders"] + project["religions"]:
         for key in TUPLE_KEYS:
             if isinstance(spec.get(key), list):
                 spec[key] = tuple(spec[key])
@@ -110,7 +116,8 @@ def project_path_for(path):
 LEADERS_MAGIC = "civ6-alt-leader-generator-leaders"
 LEADERS_ENTRY = "leaders.json"
 IMAGE_KEYS = ("icon_path", "load_fg_path", "load_bg_path", "diplo_bg_path")
-TUPLE_KEYS = ("primary", "secondary", "icon_border_color", "icon_crop")
+TUPLE_KEYS = ("primary", "secondary", "icon_border_color", "icon_crop",
+              "color")
 
 
 def _spec_images(spec):
@@ -127,18 +134,21 @@ def _spec_images(spec):
              for key in ("icon_path", "portrait_path")]
     refs += [(entry, "path") for entry in spec.get("moment_illustrations")
              or []]
+    if isinstance(spec.get("moment"), dict):    # a religion's picture
+        refs.append((spec["moment"], "path"))
     return refs
 
 
-def export_leaders(specs, path, civs=()):
-    """Write leader (and civilization) specs and their images to the zip
-    at path. Returns the image paths that were not found (exported as
-    bare paths)."""
+def export_leaders(specs, path, civs=(), religions=()):
+    """Write leader (and civilization and religion) specs and their
+    images to the zip at path. Returns the image paths that were not
+    found (exported as bare paths)."""
     images = {}                         # original path -> name in the zip
     missing = []
     civs = list(civs)
+    religions = list(religions)
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for spec in list(specs) + civs:
+        for spec in list(specs) + civs + religions:
             for holder, key in _spec_images(spec):
                 src = (holder.get(key) or "").strip()
                 if not src or src in images:
@@ -152,14 +162,15 @@ def export_leaders(specs, path, civs=()):
                 zf.write(src, images[src])
         zf.writestr(LEADERS_ENTRY, json.dumps({
             "magic": LEADERS_MAGIC, "version": PROJECT_VERSION,
-            "leaders": specs, "civs": civs, "images": images}, indent=2,
+            "leaders": specs, "civs": civs, "religions": religions,
+            "images": images}, indent=2,
             ensure_ascii=False))
     return missing
 
 
 def import_leaders(path):
     """Read an export_leaders zip. Returns (leader specs, civilization
-    specs, version). An image that
+    specs, version, religion specs). An image that
     is still at its original path is used from there; the others are
     unpacked into '<export name> images' next to the zip. Raises
     ValueError if the file is not a leader export."""
@@ -177,10 +188,15 @@ def import_leaders(path):
                 or data.get("magic") != LEADERS_MAGIC
                 or not isinstance(data.get("leaders"), list)
                 or not isinstance(data.get("images", {}), dict)
-                or not isinstance(data.get("civs", []), list)):
+                or not isinstance(data.get("civs", []), list)
+                or not isinstance(data.get("religions", []), list)):
             raise ValueError("This is not a leader export.")
         specs = data["leaders"]
         civs = data.get("civs", [])
+        religions = data.get("religions", [])
+        if not all(isinstance(r, dict) and "name" in r for r in religions):
+            raise ValueError("The export contains a malformed religion "
+                             "entry.")
         for civ in civs:
             if (not isinstance(civ, dict) or "name" not in civ
                     or not isinstance(civ.get("uniques", []), list)
@@ -203,7 +219,7 @@ def import_leaders(path):
         images = data.get("images", {})
         image_dir = os.path.splitext(path)[0] + " images"
         unpacked = {}                   # original path -> unpacked copy
-        for spec in specs + civs:
+        for spec in specs + civs + religions:
             for key in TUPLE_KEYS:      # JSON turned the tuples into lists
                 if isinstance(spec.get(key), list):
                     spec[key] = tuple(spec[key])
@@ -225,4 +241,4 @@ def import_leaders(path):
                         fh.write(zf.read(name))
                     unpacked[src] = dst
                 holder[key] = unpacked[src]
-    return specs, civs, data.get("version", 1)
+    return specs, civs, data.get("version", 1), religions
