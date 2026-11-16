@@ -19,11 +19,20 @@ import uuid
 import xml.etree.ElementTree as ET
 import zlib
 
-from civgen import (agendas, artdefs, civs, landmarks, leaders, modbuild,
-                    modifiers, moments, moods, project, religions, unit_art,
-                    unit_models, uniques)
+from civgen import (agendas, art, artdefs, civs, landmarks, leaders,
+                    modbuild, modifiers, moments, moods, project, religions,
+                    unit_art, unit_models, uniques)
 from civgen.gamedata import GameData
 from civgen.util import find_game_cache, find_game_dir
+
+
+def setUpModule():
+    # the art cache in a folder of the tests' own, not the user's
+    root = tempfile.mkdtemp(prefix="civgen_art_cache_")
+    art._art_cache_root = root
+    unittest.addModuleCleanup(shutil.rmtree, root, ignore_errors=True)
+    unittest.addModuleCleanup(setattr, art, "_art_cache_root", None)
+
 
 CACHE = find_game_cache()
 MOMENT_IMAGE = os.path.join(os.path.dirname(os.path.dirname(
@@ -1940,7 +1949,8 @@ class MoodPortraitTest(unittest.TestCase):
             "HAPPY": self.happy, "KUDOS": self.happy, "UNHAPPY": broken})
         cooked = {}
 
-        def cook_art(cooker, pantry, packages, fallbacks, mod_dir, report):
+        def cook_art(cooker, pantry, packages, fallbacks, mod_dir, report,
+                     texture_keys=None):
             cooked.update(packages=packages, fallbacks=fallbacks,
                           textures=sorted(os.listdir(os.path.join(
                               pantry, "Textures"))))
@@ -1970,6 +1980,156 @@ class MoodPortraitTest(unittest.TestCase):
         moved = specs[0]["mood_images"]["HAPPY"]
         self.assertNotEqual(moved, self.happy)
         self.assertTrue(os.path.isfile(moved))
+
+
+class ArtCacheTest(unittest.TestCase):
+    """Converted textures and cooked packages are reused while what they
+    are made from is unchanged (Pillow needed)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="civgen_artcache_")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.image = os.path.join(self.tmp, "image.png")
+        shutil.copy(MOMENT_IMAGE, self.image)
+        self.made = 0
+
+    def pantry(self):
+        return tempfile.mkdtemp(dir=self.tmp)
+
+    def add(self, pantry, key, **kw):
+        """add_texture of a made copy of self.image; counts the makes."""
+        src = os.path.join(pantry, "made.png")
+
+        def make():
+            self.made += 1
+            shutil.copy(self.image, src)
+        return art.add_texture(pantry, "TEX", src, size=64, make=make,
+                               key=key, **kw)
+
+    def read(self, pantry, ext):
+        with open(os.path.join(pantry, "Textures", "TEX" + ext), "rb") as fh:
+            return fh.read()
+
+    def test_texture_reused(self):
+        first, second = self.pantry(), self.pantry()
+        key = ("made", art.file_sig(self.image))
+        k1 = self.add(first, key)
+        k2 = self.add(second, key)
+        self.assertEqual((self.made, k1), (1, k2))
+        self.assertEqual(self.read(first, ".dds"), self.read(second, ".dds"))
+        self.assertEqual(self.read(first, ".tex").replace(
+            first.encode(), b""), self.read(second, ".tex").replace(
+            second.encode(), b""))
+
+    def test_texture_changes(self):
+        self.add(self.pantry(), ("made", art.file_sig(self.image), 1))
+        self.add(self.pantry(), ("made", art.file_sig(self.image), 2))
+        self.assertEqual(self.made, 2)                   # a parameter
+        st = os.stat(self.image)
+        os.utime(self.image, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+        self.add(self.pantry(), ("made", art.file_sig(self.image), 2))
+        self.assertEqual(self.made, 3)                   # the file
+        self.add(self.pantry(), ("made", art.file_sig(self.image), 2),
+                 cache=False)
+        self.assertEqual(self.made, 4)                   # no cache
+
+    def test_package_reused(self):
+        from unittest import mock
+        runs = []
+
+        def run_cooker(cooker, args, report, what, cwd=None):
+            runs.append(what)
+            stewpot = args[args.index("--stewpot") + 1]
+            package = os.path.splitext(os.path.basename(args[-1]))[0]
+            with open(os.path.join(stewpot, package + ".blp"), "wb") as fh:
+                fh.write(what.encode())
+            return True
+
+        def cook(keys):
+            mod_dir = tempfile.mkdtemp(dir=self.tmp)
+            with mock.patch.object(art, "run_cooker", run_cooker):
+                cooked = art.cook_art("cooker.exe", self.pantry(),
+                                      {"Pkg": ("ui", ["A", "B"])}, [],
+                                      mod_dir, [], texture_keys=keys)
+            self.assertIn("Platforms/Windows/BLPs/Pkg.blp", cooked)
+            return mod_dir
+
+        cook({"A": "1", "B": "2"})
+        self.assertEqual(len(runs), 2)                   # both platforms
+        mod_dir = cook({"A": "1", "B": "2"})
+        self.assertEqual(len(runs), 2)
+        with open(os.path.join(mod_dir, "Platforms", "MacOS", "BLPs",
+                               "Pkg.blp"), "rb") as fh:
+            self.assertEqual(fh.read(), b"Pkg.blp for MacOS")
+        cook({"A": "1", "B": "3"})                       # a texture changed
+        self.assertEqual(len(runs), 4)
+        cook(None)                                       # no cache
+        self.assertEqual(len(runs), 6)
+
+    def test_build_art_twice(self):
+        from unittest import mock
+        s = dict(leaders.new_leader_spec(), name="Q",
+                 civ="CIVILIZATION_SUMERIA", orig="LEADER_GILGAMESH",
+                 load_fg_path=self.image, icon_path=self.image)
+        c = leaders.normalize_spec(s, LoadingBackgroundTest.NoData(), "TST")
+        keys = []
+
+        def cook_art(cooker, pantry, packages, fallbacks, mod_dir, report,
+                     texture_keys=None):
+            keys.append(texture_keys)
+            return ["x.blp"]
+
+        def build(**kw):
+            report = []
+            with mock.patch.object(modbuild, "cook_art", cook_art):
+                modbuild.build_art([dict(c)], "Mod", self.tmp, report,
+                                   "cooker.exe", **kw)
+            return [line for line in report if "art cache" in line][0]
+
+        self.assertIn(" 0 reused", build())
+        self.assertIn("(0 made", build())
+        self.assertEqual(keys[0], keys[1])
+        self.assertIn(" 0 reused", build(use_cache=False))
+        self.assertIsNone(keys[2])
+
+    def test_prune(self):
+        root = os.path.join(self.tmp, "cache")
+        os.makedirs(root)
+        old, new = os.path.join(root, "old"), os.path.join(root, "new")
+        for path in (old, new):
+            with open(path, "wb") as fh:
+                fh.write(b"x" * 100)
+        os.utime(old, (0, 0))
+        self.assertEqual(art.prune_cache(root), (1, 100))
+        self.assertEqual(os.listdir(root), ["new"])
+        # files used since keep_since stay, even over the limit
+        self.assertEqual(art.prune_cache(root, max_bytes=50,
+                                         keep_since=os.path.getmtime(new)),
+                         (0, 100))
+        self.assertEqual(art.prune_cache(root, max_bytes=50), (1, 0))
+        self.assertEqual(os.listdir(root), [])
+
+    def test_build_over_limit(self):
+        """A build whose art is larger than the cache limit keeps it all
+        (pruning its oldest textures made the next build redo them)."""
+        from unittest import mock
+        s = dict(leaders.new_leader_spec(), name="Q",
+                 civ="CIVILIZATION_SUMERIA", orig="LEADER_GILGAMESH",
+                 load_fg_path=self.image, icon_path=self.image)
+        c = leaders.normalize_spec(s, LoadingBackgroundTest.NoData(), "TST")
+
+        def build():
+            report = []
+            with mock.patch.object(modbuild, "cook_art",
+                                   lambda *a, **kw: ["x.blp"]):
+                modbuild.build_art([dict(c)], "Mod", self.tmp, report,
+                                   "cooker.exe", cache_limit=1)
+            return report
+
+        report = build()
+        self.assertTrue(any("more than its limit" in line
+                            for line in report), report)
+        self.assertTrue(any("(0 made" in line for line in build()))
 
 
 class UnitAtlasTest(unittest.TestCase):

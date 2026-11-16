@@ -1,15 +1,142 @@
 """Images: DDS conversion, cooking .blp packages, icons, previews."""
 
+import hashlib
+import json
 import os
 import shutil
 import struct
 import subprocess
+import time
 
-from .util import steam_libraries, xml_escape
+from .util import cache_dir, steam_libraries, xml_escape
 from .artdefs import FALLBACK_ARTDEF, build_fallback_artdef
 
 
 ICON_SIZES = [32, 45, 48, 50, 55, 64, 80, 256]
+
+
+# ---------------------------------------------------------------------------
+# Art cache: converted textures and cooked packages, kept between builds
+# ---------------------------------------------------------------------------
+# Entries are keyed on a hash of everything they are made from: the
+# processing parameters and the size + modification time of every input
+# file. Bump ART_CACHE_VERSION whenever the code that makes a texture
+# (conversion, masks, icons, hue, glow...) or a cooked package changes,
+# so results of the old code are never reused.
+
+ART_CACHE_VERSION = 1
+ART_CACHE_MAX_AGE = 30 * 24 * 3600          # seconds unused before pruning
+# (a large mod's art can take a few GB: its textures, and its packages
+# once per platform; the user can change it, see build_art's cache_limit)
+ART_CACHE_MAX_BYTES = 5 * 1024 ** 3
+_art_cache_root = None                      # None: cache_dir("art_cache")
+
+
+def art_cache_root():
+    return _art_cache_root or cache_dir("art_cache")
+
+
+def file_sig(path):
+    """(absolute path, size, modification time) of a file, or None when
+    there is none - a cheap stand-in for its content in cache keys."""
+    try:
+        st = os.stat(path)
+    except (OSError, TypeError, ValueError):
+        return None
+    return (os.path.normcase(os.path.abspath(path)), st.st_size,
+            st.st_mtime_ns)
+
+
+def cache_key(*parts):
+    """A hex digest of parts (JSON-able; tuples count as lists)."""
+    blob = json.dumps((ART_CACHE_VERSION,) + parts, sort_keys=True,
+                      default=str)
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()
+
+
+def _cache_path(sub, key, ext):
+    return os.path.join(art_cache_root(), sub, key[:2], key + ext)
+
+
+def cache_get(sub, key, ext):
+    """The cached file's path (its mtime refreshed, for pruning), or
+    None."""
+    path = _cache_path(sub, key, ext)
+    if not os.path.isfile(path):
+        return None
+    try:
+        os.utime(path)
+    except OSError:
+        pass
+    return path
+
+
+def cache_put(sub, key, ext, src=None, data=None):
+    """Store a copy of the file src (or the bytes data) in the cache.
+    Atomic, so an interrupted build never leaves half an entry; errors
+    only mean the entry is not cached."""
+    path = _cache_path(sub, key, ext)
+    tmp = "{}.{}.tmp".format(path, os.getpid())
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if src is not None:
+            shutil.copyfile(src, tmp)
+        else:
+            with open(tmp, "wb") as fh:
+                fh.write(data)
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def _cache_files(root):
+    """(mtime, size, path) of every file in the cache, oldest first."""
+    files = []
+    for dirpath, _, filenames in os.walk(root):
+        for fname in filenames:
+            path = os.path.join(dirpath, fname)
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            files.append((st.st_mtime, st.st_size, path))
+    return sorted(files)
+
+
+def cache_usage(root=None):
+    """Bytes the art cache takes."""
+    return sum(f[1] for f in _cache_files(root or art_cache_root()))
+
+
+def clear_cache(root=None):
+    shutil.rmtree(root or art_cache_root(), ignore_errors=True)
+
+
+def prune_cache(root=None, max_age=ART_CACHE_MAX_AGE,
+                max_bytes=ART_CACHE_MAX_BYTES, keep_since=None):
+    """Delete cache files unused for max_age seconds, then the oldest
+    ones until the cache holds at most max_bytes. Files used (written or
+    reused) at or after the time keep_since are never deleted: they are
+    the build's own, which the next build wants back - deleting the
+    oldest of them would only make it convert them all over again.
+    Returns (files deleted, bytes left)."""
+    files, now = _cache_files(root or art_cache_root()), time.time()
+    total, deleted = sum(f[1] for f in files), 0
+    for mtime, size, path in files:
+        if now - mtime < max_age and total <= max_bytes:
+            break
+        if keep_since is not None and mtime >= keep_since:
+            break                         # (and every newer one)
+        try:
+            os.remove(path)
+        except OSError:
+            continue
+        total -= size
+        deleted += 1
+    return deleted, total
 
 
 # ---------------------------------------------------------------------------
@@ -211,16 +338,49 @@ TEX_TEMPLATE = """<?xml version="1.0" encoding="UTF-8" ?>
 """
 
 
-def add_texture(pantry, name, src, kind="ui", size=None):
+def add_texture(pantry, name, src, kind="ui", size=None, make=None,
+                key=None, cache=True):
     """Convert src into pantry/Textures/<name>.dds plus its .tex
-    descriptor. Returns False when Pillow is not installed."""
+    descriptor. make: a function that writes src first (an image made
+    for the texture), skipped when the cache has the texture. key: what
+    src is made from (JSON-able parameters and file_sig()s of its input
+    files); by default, without make, src's own file_sig. cache: use and
+    fill the art cache. Returns the texture's key (a hex string; the
+    same key means the same .dds), or None when Pillow is not
+    installed."""
     settings = TEXTURE_KINDS[kind]
     tex_dir = os.path.join(pantry, "Textures")
     os.makedirs(tex_dir, exist_ok=True)
-    result = convert_image_to_dds(src, os.path.join(tex_dir, name + ".dds"),
-                                  size=size, mips=settings["mips"])
-    if not result:
-        return False
+    dds = os.path.join(tex_dir, name + ".dds")
+    if key is None and make is None:
+        key = ("file", file_sig(src))
+    full_key = (cache_key("texture", kind, size, key)
+                if cache and key is not None else None)
+    result = None
+    if full_key:
+        cached, meta = (cache_get("textures", full_key, ".dds"),
+                        cache_get("textures", full_key, ".json"))
+        if cached and meta:
+            try:
+                with open(meta, encoding="utf-8") as fh:
+                    result = tuple(json.load(fh))
+                shutil.copyfile(cached, dds)
+            except (OSError, ValueError, TypeError):
+                result = None                         # a miss, then
+    if result is None:
+        if make is not None:
+            make()
+        result = convert_image_to_dds(src, dds, size=size,
+                                      mips=settings["mips"])
+        if not result:
+            return None
+        if full_key:
+            cache_put("textures", full_key, ".dds", src=dds)
+            cache_put("textures", full_key, ".json",
+                      data=json.dumps(list(result)).encode("utf-8"))
+        else:                       # uncached: the key is the content
+            with open(dds, "rb") as fh:
+                full_key = hashlib.sha1(fh.read()).hexdigest()
     width, height, num_mips = result
     with open(os.path.join(tex_dir, name + ".tex"), "w",
               encoding="utf-8", newline="\n") as fh:
@@ -232,7 +392,7 @@ def add_texture(pantry, name, src, kind="ui", size=None):
             class_name=settings["class_name"],
             tags="\n".join('\t\t<Element text="{}"/>'.format(t)
                            for t in settings["tags"])))
-    return True
+    return full_key
 
 
 def atlas_image(paths, size):
@@ -287,6 +447,7 @@ def run_cooker(cooker, args, report, what, cwd=None):
     cmd = ([cooker, "--absolute_paths", "--no_mt"] + args[:-1] +
            ["--shaders", cooker_dir,
             "--config", os.path.join(cooker_dir, "Civ6.cfg"), args[-1]])
+    start = time.perf_counter()
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, errors="replace",
@@ -299,15 +460,21 @@ def run_cooker(cooker, args, report, what, cwd=None):
         report.append("WARNING: cooking {} failed:".format(what))
         report.extend("    " + line for line in output.splitlines()[-15:])
         return False
-    report.append("cooked " + what)
+    report.append("cooked {} ({:.1f} s)".format(
+        what, time.perf_counter() - start))
     return True
 
 
-def cook_art(cooker, pantry, packages, fallbacks, mod_dir, report):
+def cook_art(cooker, pantry, packages, fallbacks, mod_dir, report,
+             texture_keys=None):
     """Cook the texture packages and write the fallback artdef (if any).
 
     packages: {package name: (texture kind, [texture names])}
     fallbacks: (leader type, {mood slot: fallback texture name}) pairs
+    texture_keys: {texture name: add_texture's key}; with a key for
+    every texture of a package, a package cooked before from the same
+    textures is taken from the art cache instead of cooked again (None:
+    always cook, and cache nothing).
     Writes mod_dir/Platforms/*/BLPs/*.blp and mod_dir/ArtDefs/*.artdef.
     Returns the mod-relative paths of all cooked files ([] on failure)."""
     pantry_arg = os.path.join(pantry, "")
@@ -316,10 +483,14 @@ def cook_art(cooker, pantry, packages, fallbacks, mod_dir, report):
     xlps = []
     for package, (kind, names) in sorted(packages.items()):
         path = os.path.join(xlp_dir, package + ".xlp")
+        xlp = build_xlp(TEXTURE_KINDS[kind]["xlp_class"], package, names)
         with open(path, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(build_xlp(TEXTURE_KINDS[kind]["xlp_class"], package,
-                               names))
-        xlps.append((package, path))
+            fh.write(xlp)
+        keys = [(texture_keys or {}).get(n) for n in names]
+        package_key = (cache_key("blp", kind, xlp, sorted(zip(names, keys)),
+                                 file_sig(cooker))
+                       if texture_keys is not None and all(keys) else None)
+        xlps.append((package, path, package_key))
 
     for sub in ("Platforms", "ArtDefs"):               # drop stale output
         shutil.rmtree(os.path.join(mod_dir, sub), ignore_errors=True)
@@ -327,15 +498,30 @@ def cook_art(cooker, pantry, packages, fallbacks, mod_dir, report):
     for platform in COOKER_PLATFORMS:
         stewpot = os.path.join(mod_dir, "Platforms", platform, "BLPs")
         os.makedirs(stewpot, exist_ok=True)
-        for package, xlp in xlps:
+        for package, xlp, package_key in xlps:
+            blp = os.path.join(stewpot, package + ".blp")
+            key = package_key and cache_key(package_key, platform)
+            cached = key and cache_get("blp", key, ".blp")
+            if cached:
+                try:
+                    shutil.copyfile(cached, blp)
+                    # (an empty folder the cooker always makes)
+                    os.makedirs(os.path.join(stewpot, "SHARED_DATA"),
+                                exist_ok=True)
+                    report.append("reused cooked {}.blp for {} (art "
+                                  "unchanged)".format(package, platform))
+                    continue
+                except OSError:
+                    pass                               # cook it, then
             ok = run_cooker(
                 cooker, ["--mode", "XLP", "--platform", platform,
                          "--pantry", pantry_arg, "--stewpot", stewpot, xlp],
                 report, "{}.blp for {}".format(package, platform),
                 cwd=pantry)
-            if not ok or not os.path.isfile(
-                    os.path.join(stewpot, package + ".blp")):
+            if not ok or not os.path.isfile(blp):
                 return []
+            if key:
+                cache_put("blp", key, ".blp", src=blp)
 
     if fallbacks:
         # Written in cooked form directly: the command-line cooker cannot

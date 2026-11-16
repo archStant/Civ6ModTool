@@ -114,6 +114,16 @@ def steam_libraries():
     return libraries
 
 
+def cache_dir(*parts):
+    """A folder of the generator's own caches (kept between runs, outside
+    any mod folder so it is never uploaded): %LOCALAPPDATA%/civgen/...,
+    or ~/.civgen_cache/... elsewhere. Not created here."""
+    base = os.environ.get("LOCALAPPDATA")
+    root = (os.path.join(base, "civgen") if base else
+            os.path.join(os.path.expanduser("~"), ".civgen_cache"))
+    return os.path.join(root, *parts)
+
+
 def find_game_dir():
     """The Civ VI install folder (Steam or Epic), or None."""
     candidates = [os.path.join(lib, "steamapps", "common", GAME_FOLDER)

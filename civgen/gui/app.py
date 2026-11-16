@@ -301,7 +301,8 @@ class GeneratorApp(tk.Tk):
                                        command=self.on_generate)
         self.generate_btn.pack(side="right", padx=(6, 2))
         add_tooltip(self.generate_btn, "Write the mod into the output "
-                    "folder (F5)")
+                    "folder (F5). Images that have not changed since the "
+                    "last build are reused; Ctrl+F5 makes them all again")
         publish = ttk.Button(toolbar, text="Publish to Workshop...",
                              style="Toolbutton", command=self.on_publish)
         publish.pack(side="right", padx=1)
@@ -477,6 +478,8 @@ class GeneratorApp(tk.Tk):
                               ("<Control-s>", self.on_save_project),
                               ("<Control-S>", self.on_save_project_as),
                               ("<F5>", self.on_generate),
+                              ("<Control-F5>", lambda: self.on_generate(
+                                  use_cache=False)),
                               ("<F11>", self.toggle_fullscreen)):
             self.bind(keys, lambda e, c=command: c())
         self.bind("<Escape>", lambda e: self.toggle_fullscreen(False))
@@ -1248,9 +1251,11 @@ class GeneratorApp(tk.Tk):
             retarget(self.project["civs"], mapping)
             retarget(self.project["leaders"], mapping)
 
-    def on_generate(self, ask_open=True):
+    def on_generate(self, ask_open=True, use_cache=True):
         """Generate the mod. ask_open: offer to open its folder after.
-        Returns True when the mod was written."""
+        use_cache: reuse art earlier builds made from the same images
+        (False: convert and cook everything again). Returns True when the
+        mod was written."""
         # references left behind by an earlier prefix (older projects)
         fixed = repair_references(self.project["leaders"],
                                   self.project["civs"], self.type_prefix(),
@@ -1333,7 +1338,8 @@ class GeneratorApp(tk.Tk):
                 busy.set_status, civs, self.data.type_name,
                 {"version": publish["version"], "author": publish["author"],
                  "description": plain_text(publish["description"])},
-                stamp, extra_files, religions))
+                stamp, extra_files, religions, use_cache,
+                (theme.art_cache_gb() or 0) * 1024 ** 3 or None))
         except OSError as exc:
             messagebox.showerror("Could not write mod", str(exc))
             return False

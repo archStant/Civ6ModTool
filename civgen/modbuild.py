@@ -3,6 +3,7 @@
 import os
 import shutil
 import tempfile
+import time
 import xml.etree.ElementTree as ET
 
 from .util import (asset_path, find_game_dir, sql_str, type_display_name,
@@ -14,8 +15,8 @@ from .artdefs import (CIVILIZATIONS_ARTDEF, CULTURES_ARTDEF,
                       renamed_element_xml)
 from .art import (DIPLO_BG_MASK, ICON_SIZES, MOMENT_HALF_OPACITY, MOMENT_MASK,
                   PORTRAIT_SIZE, add_texture, apply_image_mask, cook_art,
-                  atlas_image, fitted_portrait, make_circle_icon,
-                  shift_hue)
+                  ART_CACHE_MAX_BYTES, atlas_image, file_sig,
+                  fitted_portrait, make_circle_icon, prune_cache, shift_hue)
 from .workshop import FORBIDDEN, STAMP_FILE
 from .moments import MOMENT_ILLUSTRATION_SIZE
 from .moods import fallback_slot, resolve_slot
@@ -784,7 +785,8 @@ def prepare_project(leader_specs, civ_specs, data, prefix="",
 
 def write_mod(mod_name, ctxs, folder, mod_dir, guid, cooker, report,
               progress, civs=(), name_of=None, publish=None, stamp=None,
-              extra_files=(), religions=()):
+              extra_files=(), religions=(), use_cache=True,
+              cache_limit=None):
     """Cook the art and write every mod file (runs in a worker thread,
     so no Tk calls here; progress(text) updates the busy window). civs:
     contexts of the project's new civilizations (civs.normalize_civ);
@@ -793,8 +795,9 @@ def write_mod(mod_name, ctxs, folder, mod_dir, guid, cooker, report,
     "description" - plain text}); stamp: written to STAMP_FILE (see
     workshop.build_stamp); extra_files: the custom files, checked (see
     check_extra_files); religions: contexts of the project's new
-    religions (religions.normalize_religion). Returns the number of
-    custom icons. Raises OSError."""
+    religions (religions.normalize_religion); use_cache, cache_limit:
+    reuse art an earlier build made (see build_art). Returns the number of custom
+    icons. Raises OSError."""
     name_of = name_of or (lambda kind, t: type_display_name(t))
     icon_jobs = [(cc, cc["icon_path"], CIV_ICON_SIZES) for cc in civs
                  if cc["icon_custom"]]
@@ -810,7 +813,8 @@ def write_mod(mod_name, ctxs, folder, mod_dir, guid, cooker, report,
      fallback_package) = build_art(ctxs, folder, mod_dir, report,
                                    cooker, progress, icon_jobs,
                                    [o for o in list(civs) + religions
-                                    if o["moments"]])
+                                    if o["moments"]], use_cache,
+                                   cache_limit)
     progress("Writing mod files...")
     # after build_art, which clears ArtDefs/ unless it cooked fallbacks
     artdef_files = write_civ_artdefs(civs, mod_dir, report, uniques)
@@ -1129,9 +1133,14 @@ def write_civ_artdefs(civs, mod_dir, report, uniques=()):
 
 
 def build_art(ctxs, folder, mod_dir, report, cooker,
-              progress=lambda text: None, icon_jobs=(), moment_owners=()):
+              progress=lambda text: None, icon_jobs=(), moment_owners=(),
+              use_cache=True, cache_limit=None):
     """Convert every custom image and cook them into .blp packages
-    with cooker (None: not available). icon_jobs: (context, image path,
+    with cooker (None: not available). use_cache: reuse (and keep)
+    textures and packages an earlier build made from the same images
+    (art.ART_CACHE_VERSION). cache_limit: bytes the art cache may keep
+    (None: art.ART_CACHE_MAX_BYTES); this build's art is always kept.
+    icon_jobs: (context, image path,
     icon sizes) of other icons (new civilizations and uniques; context
     needs icon_name, icon_atlas, name and icon_custom). moment_owners:
     other contexts (civilizations) with historic moment pictures
@@ -1177,11 +1186,41 @@ def build_art(ctxs, folder, mod_dir, report, cooker,
         return give_up("SDK asset cooker not found")
 
     pantry = tempfile.mkdtemp(prefix="altleader_art_")
+    texture_keys, stats = {}, {"made": 0, "reused": 0}
+    # cache files used from now on are this build's (kept when pruning);
+    # a little early, for file systems with coarse timestamps
+    build_start = time.time() - 2
 
-    def convert(name, src, kind="ui", size=None):
-        if not add_texture(pantry, name, src, kind=kind, size=size):
+    def convert(name, src, kind="ui", size=None, make=None, key=None):
+        """Convert src (written first by make, unless the art cache has
+        the texture already; key: what make makes it from)."""
+        made = []
+
+        def make_and_count():
+            made.append(True)
+            if make:
+                make()
+        # (make_and_count also runs for a plain file: it counts misses)
+        tex_key = add_texture(
+            pantry, name, src, kind=kind, size=size, make=make_and_count,
+            key=key if key is not None else ("file", file_sig(src)),
+            cache=use_cache)
+        if not tex_key:
             raise RuntimeError("Pillow is not installed (pip install Pillow)")
-        report.append("converted " + name)
+        texture_keys[name] = tex_key
+        stats["made" if made else "reused"] += 1
+        report.append(("converted " if made else
+                       "reused (unchanged) ") + name)
+
+    def once(make):
+        """make, run at most once (an image several textures share)."""
+        done = []
+
+        def run():
+            if not done:
+                make()
+                done.append(True)
+        return run
 
     def convert_moment(owner, m):
         """Convert one moment picture (masked / faded / sepia as asked;
@@ -1189,25 +1228,33 @@ def build_art(ctxs, folder, mod_dir, report, cooker,
         size = m.get("size") or MOMENT_ILLUSTRATION_SIZE
         if m.get("ink"):
             moment_src = os.path.join(pantry, m["texture"] + "_ink.png")
-            religion_moment_ink(m["ink"]).save(moment_src)
-            report.append("drew " + m["texture"])
-            convert(m["texture"], moment_src, size=size)
+
+            def draw():
+                religion_moment_ink(m["ink"]).save(moment_src)
+                report.append("drew " + m["texture"])
+            convert(m["texture"], moment_src, size=size, make=draw,
+                    key=("ink", file_sig(m["ink"])))
             return
-        moment_src = m["path"]
         mask = asset_path(MOMENT_MASK) if m["mask"] else None
         if m["mask"] and not mask:
             report.append(
                 "WARNING: {} - assets/{} not found; the {} moment picture "
                 "is not masked".format(owner["name"], MOMENT_MASK,
                                        m["item"]))
-        if mask or m["half"] or m["sepia"]:
-            moment_src = os.path.join(pantry, m["texture"] + "_edited.png")
+        if not (mask or m["half"] or m["sepia"]):
+            convert(m["texture"], m["path"], size=size)
+            return
+        moment_src = os.path.join(pantry, m["texture"] + "_edited.png")
+
+        def edit():
             apply_image_mask(
                 m["path"], mask, size=size,
                 opacity=MOMENT_HALF_OPACITY if m["half"] else 1.0,
                 sepia=m["sepia"]).save(moment_src)
             report.append("edited " + m["texture"])
-        convert(m["texture"], moment_src, size=size)
+        convert(m["texture"], moment_src, size=size, make=edit,
+                key=("moment", file_sig(m["path"]), file_sig(mask),
+                     m["half"], m["sepia"], size))
 
     def convert_moods(c, textures):
         """Convert a leader's diplomacy portraits by mood (fitted like the
@@ -1221,8 +1268,9 @@ def build_art(ctxs, folder, mod_dir, report, cooker,
             if texture not in done:
                 try:
                     src = os.path.join(pantry, texture + "_fitted.png")
-                    fitted_portrait(path).save(src)
-                    convert(texture, src, kind="fallback")
+                    convert(texture, src, kind="fallback",
+                            make=lambda: fitted_portrait(path).save(src),
+                            key=("fitted", file_sig(path)))
                 except Exception as exc:  # unreadable image, disk error...
                     report.append(
                         "WARNING: {} - could not convert the {} diplomacy "
@@ -1236,6 +1284,7 @@ def build_art(ctxs, folder, mod_dir, report, cooker,
             textures[slot] = texture
 
     try:
+        start = time.perf_counter()
         ui_textures, fallbacks, icon_leader_files = [], [], []
         for i, c in enumerate(wanted, 1):
             progress("Converting images for {} ({} of {})...".format(
@@ -1244,52 +1293,67 @@ def build_art(ctxs, folder, mod_dir, report, cooker,
 
             try:
                 if c["icon_custom"]:
-                    icon_src = c["icon_path"]
+                    icon_src, make, key = c["icon_path"], None, None
                     if c["icon_mode"] == "portrait":
                         # render the bordered circle once at high
                         # resolution, then scale it to every size
                         icon_src = os.path.join(
                             pantry, c["icon_name"] + "_source.png")
-                        make_circle_icon(
-                            fitted_portrait(c["load_fg_path"]),
-                            c["icon_crop"],
-                            c["icon_border_color"],
-                            c["icon_border_width"]).save(icon_src)
-                        report.append("cut {} out of the loading "
-                                      "portrait".format(c["icon_name"]))
+
+                        def make(c=c, icon_src=icon_src):
+                            make_circle_icon(
+                                fitted_portrait(c["load_fg_path"]),
+                                c["icon_crop"],
+                                c["icon_border_color"],
+                                c["icon_border_width"]).save(icon_src)
+                            report.append("cut {} out of the loading "
+                                          "portrait".format(c["icon_name"]))
+                        make = once(make)
+                        key = ("circle", file_sig(c["load_fg_path"]),
+                               c["icon_crop"], c["icon_border_color"],
+                               c["icon_border_width"])
                     for size in ICON_SIZES:
                         tex = "{}_{}".format(c["icon_name"], size)
-                        convert(tex, icon_src, size=size)
+                        convert(tex, icon_src, size=size, make=make, key=key)
                         icons.append((size, tex))
                         names.append(tex)
                 if c["load_fg"]:
                     fg_src = os.path.join(
                         pantry, c["load_fg_name"] + "_fitted.png")
-                    fitted_portrait(c["load_fg_path"]).save(fg_src)
-                    report.append("fitted {} to {} x {}".format(
-                        c["load_fg_name"], *PORTRAIT_SIZE))
-                    convert(c["load_fg_name"], fg_src)
+
+                    def fit(c=c, fg_src=fg_src):
+                        fitted_portrait(c["load_fg_path"]).save(fg_src)
+                        report.append("fitted {} to {} x {}".format(
+                            c["load_fg_name"], *PORTRAIT_SIZE))
+                    fit = once(fit)
+                    fg_key = ("fitted", file_sig(c["load_fg_path"]))
+                    convert(c["load_fg_name"], fg_src, make=fit, key=fg_key)
                     names.append(c["load_fg_name"])
                     # the diplomacy screen's 2D fallback uses the same
                     # picture, cooked as a LeaderFallback texture
-                    convert(c["fallback_name"], fg_src, kind="fallback")
+                    convert(c["fallback_name"], fg_src, kind="fallback",
+                            make=fit, key=fg_key)
                     fallback = (c["slug"], {"NEUTRAL": c["fallback_name"]})
                     convert_moods(c, fallback[1])
                 if c["load_bg"]:
-                    bg_src = c["load_bg_path"]
+                    bg_src, make, key = c["load_bg_path"], None, None
                     if c["load_bg_hue"]:
                         bg_src = os.path.join(
                             pantry, c["load_bg_name"] + "_hue.png")
-                        from PIL import Image
-                        with Image.open(c["load_bg_path"]) as img:
-                            shift_hue(img, c["load_bg_hue"]).save(bg_src)
-                        report.append("turned the hue of {} by {} "
-                                      "degrees".format(c["load_bg_name"],
-                                                       c["load_bg_hue"]))
-                    convert(c["load_bg_name"], bg_src)
+
+                        def make(c=c, bg_src=bg_src):
+                            from PIL import Image
+                            with Image.open(c["load_bg_path"]) as img:
+                                shift_hue(img, c["load_bg_hue"]).save(bg_src)
+                            report.append("turned the hue of {} by {} "
+                                          "degrees".format(c["load_bg_name"],
+                                                           c["load_bg_hue"]))
+                        key = ("hue", file_sig(c["load_bg_path"]),
+                               c["load_bg_hue"])
+                    convert(c["load_bg_name"], bg_src, make=make, key=key)
                     names.append(c["load_bg_name"])
                 if c["diplo_bg"]:
-                    diplo_src = c["diplo_bg_path"]
+                    diplo_src, make, key = c["diplo_bg_path"], None, None
                     mask = asset_path(DIPLO_BG_MASK)
                     if c["diplo_bg_mask"] and not mask:
                         report.append(
@@ -1299,10 +1363,15 @@ def build_art(ctxs, folder, mod_dir, report, cooker,
                     elif c["diplo_bg_mask"]:
                         diplo_src = os.path.join(
                             pantry, c["diplo_bg_name"] + "_masked.png")
-                        apply_image_mask(c["diplo_bg_path"],
-                                         mask).save(diplo_src)
-                        report.append("masked " + c["diplo_bg_name"])
-                    convert(c["diplo_bg_name"], diplo_src)
+
+                        def make(c=c, diplo_src=diplo_src, mask=mask):
+                            apply_image_mask(c["diplo_bg_path"],
+                                             mask).save(diplo_src)
+                            report.append("masked " + c["diplo_bg_name"])
+                        key = ("mask", file_sig(c["diplo_bg_path"]),
+                               file_sig(mask))
+                    convert(c["diplo_bg_name"], diplo_src, make=make,
+                            key=key)
                     names.append(c["diplo_bg_name"])
                 for m in c["moments"]:
                     convert_moment(c, m)
@@ -1344,23 +1413,29 @@ def build_art(ctxs, folder, mod_dir, report, cooker,
                 for size in sizes:
                     tex = "{}_{}".format(c["icon_name"], size)
                     cell_src, texture_size = src, size
+                    make, key = None, None
                     if isinstance(src, list):   # cells side by side
                         cell_src = os.path.join(pantry, tex + "_atlas.png")
-                        atlas_image(src, size).save(cell_src)
+
+                        def make(src=src, size=size, cell_src=cell_src):
+                            atlas_image(src, size).save(cell_src)
+                        key = ("atlas", [file_sig(p) for p in src])
                         texture_size = (size * len(src), size)
                     elif c.get("icon_glow") or \
                             c.get("icon_opacity", 1.0) < 1:
                         # (a religion's icon) the glow at each size, so
                         # every size looks alike; and its opacity
                         cell_src = os.path.join(pantry, tex + "_styled.png")
-                        glowing_icon(src, size, c.get("icon_glow", 0.0),
-                                     c.get("icon_opacity", 1.0)).save(
-                            cell_src)
-                    if not add_texture(pantry, tex, cell_src,
-                                       size=texture_size):
-                        raise RuntimeError("Pillow is not installed "
-                                           "(pip install Pillow)")
-                    report.append("converted " + tex)
+                        glow = c.get("icon_glow", 0.0)
+                        opacity = c.get("icon_opacity", 1.0)
+
+                        def make(src=src, size=size, cell_src=cell_src,
+                                 glow=glow, opacity=opacity):
+                            glowing_icon(src, size, glow, opacity).save(
+                                cell_src)
+                        key = ("glow", file_sig(src), glow, opacity)
+                    convert(tex, cell_src, size=texture_size, make=make,
+                            key=key)
                     icons.append((size, tex))
             except Exception as exc:  # unreadable image, disk error, ...
                 report.append("WARNING: {} - could not convert its icon "
@@ -1379,12 +1454,20 @@ def build_art(ctxs, folder, mod_dir, report, cooker,
                 "fallback", list(dict.fromkeys(
                     tex for _, textures in fallbacks
                     for tex in textures.values())))
+        report.append("converted images in {:.1f} s ({} made, {} reused "
+                      "from the art cache)".format(
+                          time.perf_counter() - start, stats["made"],
+                          stats["reused"]))
         if not packages:
             return give_up(None)
         progress("Cooking art with the SDK asset cooker (this can take "
                  "a minute)...")
+        start = time.perf_counter()
         cooked = cook_art(cooker, pantry, packages, fallbacks, mod_dir,
-                          report)
+                          report,
+                          texture_keys=texture_keys if use_cache else None)
+        report.append("cooking took {:.1f} s".format(
+            time.perf_counter() - start))
         if not cooked:
             return give_up("cooking failed")
         return (icon_leader_files, cooked,
@@ -1392,3 +1475,17 @@ def build_art(ctxs, folder, mod_dir, report, cooker,
                 fallback_package if fallbacks else None)
     finally:
         shutil.rmtree(pantry, ignore_errors=True)
+        if use_cache:
+            limit = cache_limit or ART_CACHE_MAX_BYTES
+            try:
+                _, left = prune_cache(max_bytes=limit,
+                                      keep_since=build_start)
+            except OSError:
+                left = 0
+            if left > limit:
+                report.append(
+                    "WARNING: this mod's art takes {:.1f} GB in the art "
+                    "cache, more than its limit of {:.1f} GB - it is kept "
+                    "for the next build, but raise the limit in Settings "
+                    "to keep other projects' art too".format(
+                        left / 1024.0 ** 3, limit / 1024.0 ** 3))
