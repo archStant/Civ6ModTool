@@ -8,6 +8,7 @@ import webbrowser
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from ..fonticons import SDK_ASSETS_FOLDER, default_icons
 from ..workshop import (MAX_DESCRIPTION, MAX_TITLE, PREVIEW_STYLES,
                         VISIBILITIES,
                         check_mod, find_modinfo, generated_description,
@@ -228,6 +229,8 @@ class WorkshopDialog(tk.Toplevel):
         folder = os.path.join(os.path.dirname(self.app.mod_dir()),
                               os.path.basename(self.app.mod_dir()) +
                               "_Workshop", "showcase")
+        if not self._font_icons_ok():
+            return
         try:
             paths = make_showcase(folder, self.app.project["civs"],
                                   self.app.project["leaders"],
@@ -252,6 +255,24 @@ class WorkshopDialog(tk.Toplevel):
             parent=self)
         if hasattr(os, "startfile"):
             os.startfile(folder)
+
+    def _font_icons_ok(self):
+        """True if the game's font icons can be drawn in the showcase
+        images, or the user chose to make them without (the icon tags are
+        then dropped from the text)."""
+        if not default_icons():
+            default_icons.cache_clear()     # installed since the last look?
+            if not default_icons():
+                return messagebox.askokcancel(
+                    "No game icons",
+                    "The game's icons (Faith, Combat Strength, ...) can't "
+                    "be drawn inline in the text: they need the \"{}\" "
+                    "tool, which isn't installed. In Steam, find it under "
+                    "Library > Tools.\n\nWithout it the icons are left out "
+                    "of the text. Make the images anyway?".format(
+                        SDK_ASSETS_FOLDER),
+                    icon="warning", parent=self)
+        return True
 
     def view_item(self):
         url = workshop_url(self.published.get())
