@@ -716,7 +716,9 @@ class GeneratorApp(tk.Tk):
             except ImportError:         # no Pillow: names only
                 pass
             tree.insert("", "end", iid=str(i), image=photo,
-                        text="  " + spec.get("name", ""),
+                        text="  " + spec.get("name", "") + (
+                            "  (player names it)" if spec.get("renameable")
+                            else ""),
                         values=(religion_type,
                                 ", ".join(favored.get(religion_type, []))
                                 or "(no leader)"))

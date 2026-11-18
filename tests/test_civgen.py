@@ -309,8 +309,9 @@ class GeneratedModTest(unittest.TestCase):
         # religion's icon
         own = dict(religions.new_religion_spec(), name="Old Ways",
                    color=(10, 200, 30))
+        # (renameable: the player names it when founding it)
         sun = dict(religions.new_religion_spec(), name="Sun Cult",
-                   icon_from="RELIGION_SHINTO")
+                   icon_from="RELIGION_SHINTO", renameable=True)
         leader_specs[1]["favored_religion_id"] = own["id"]
         leader_specs[4]["favored_religion"] = "RELIGION_ISLAM"
         cls.civs, cls.ctxs, errors, cls.religions = modbuild.prepare_project(
@@ -348,14 +349,14 @@ class GeneratedModTest(unittest.TestCase):
             db.executescript(read(self.mod_dir, modbuild.XP2_FILE))
         self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
         q = lambda sql: db.execute(sql).fetchall()    # noqa: E731
-        self.assertEqual(q("SELECT ReligionType, Name, Pantheon, Color FROM "
-                           "Religions WHERE ReligionType LIKE '%TST%' "
-                           "ORDER BY 1"),
+        self.assertEqual(q("SELECT ReligionType, Name, Pantheon, "
+                           "RequiresCustomName, Color FROM Religions WHERE "
+                           "ReligionType LIKE '%TST%' ORDER BY 1"),
                          [("RELIGION_TST_OLD_WAYS",
-                           "LOC_RELIGION_TST_OLD_WAYS_NAME", 0,
+                           "LOC_RELIGION_TST_OLD_WAYS_NAME", 0, 0,
                            "COLOR_RELIGION_TST_OLD_WAYS"),
                           ("RELIGION_TST_SUN_CULT",
-                           "LOC_RELIGION_TST_SUN_CULT_NAME", 0,
+                           "LOC_RELIGION_TST_SUN_CULT_NAME", 0, 1,
                            "COLOR_RELIGION_TST_SUN_CULT")])
         # its own pick, a game religion, the original leader's
         self.assertEqual(q("SELECT LeaderType, ReligionType FROM "
@@ -2217,7 +2218,7 @@ class WorkshopTest(unittest.TestCase):
         path = self.ws.make_preview(os.path.join(self.tmp, "p.jpg"),
                                     "Amazons", self.civs, self.leaders)
         self.assertLess(os.path.getsize(path), self.ws.MAX_PREVIEW_BYTES)
-        self.assertEqual(Image.open(path).size, (512, 512))
+        self.assertEqual(Image.open(path).size, (self.ws.PREVIEW_SIZE,) * 2)
 
     def test_busy_preview(self):
         from PIL import Image
@@ -2232,7 +2233,7 @@ class WorkshopTest(unittest.TestCase):
                                     style="busy")
         simple = self.ws.make_preview(os.path.join(self.tmp, "simple.jpg"),
                                       "Amazons", self.civs, self.leaders)
-        self.assertEqual(Image.open(busy).size, (512, 512))
+        self.assertEqual(Image.open(busy).size, (self.ws.PREVIEW_SIZE,) * 2)
         self.assertLess(os.path.getsize(busy), self.ws.MAX_PREVIEW_BYTES)
         self.assertNotEqual(open(busy, "rb").read(),
                             open(simple, "rb").read())
@@ -2244,6 +2245,121 @@ class WorkshopTest(unittest.TestCase):
                                             "X", civs, leaders)
         self.assertEqual(open(empty_busy, "rb").read(),
                          open(empty_simple, "rb").read())
+
+    def test_showcase(self):
+        from PIL import Image
+        civ = self.civs[0]
+        civ["icon_path"] = MOMENT_IMAGE
+        civ["uniques"][0]["portrait_path"] = MOMENT_IMAGE
+        civ["ability"]["desc"] = " ".join(
+            ["+2 [ICON_Science] Science, [COLOR_Red]long[ENDCOLOR]."] * 300)
+        lead = self.leaders[0]
+        lead.update(load_fg_path=MOMENT_IMAGE, quote="Onward!",
+                    new_ability={"name": "Maid", "desc": "Brave."})
+        # linked to the civilization, with no portrait of its own
+        linked = leaders.new_leader_spec()
+        linked.update(name="Hippolyta", civ_id=civ["id"])
+        # nothing to show
+        empty = leaders.new_leader_spec()
+        empty.update(name="Nobody")
+        out = os.path.join(self.tmp, "showcase")
+        paths = self.ws.make_showcase(out, self.civs,
+                                      [lead, linked, empty])
+        self.assertEqual(sorted(os.path.basename(p) for p in paths),
+                         sorted(["civ_Amazons.jpg", "leader_Jeanne.jpg",
+                                 "leader_Hippolyta.jpg"]))
+        for path in paths:
+            self.assertEqual(Image.open(path).size, self.ws.SHOWCASE_SIZE)
+            self.assertLess(os.path.getsize(path), self.ws.MAX_PREVIEW_BYTES)
+        self.assertNotIn("[COLOR", self.ws.strip_game_markup(
+            "[COLOR_Red]a[ENDCOLOR]"))
+
+    def _font_icons(self):
+        """A tiny game + SDK Assets with two font icons in a 2x1 atlas
+        (one red, one in a second, larger size of the same atlas), plus
+        an expansion overriding nothing but adding Favor."""
+        from PIL import Image
+        from civgen import fonticons
+        game = os.path.join(self.tmp, "game")
+        icons_dir = os.path.join(game, "Base", "Assets", "UI", "Icons")
+        xp2 = os.path.join(game, "DLC", "Expansion2", "Data")
+        scenario = os.path.join(game, "DLC", "PiratesScenario", "Data")
+        tex = os.path.join(self.tmp, "sdk", "Civ6", "pantry", "Textures")
+        for d in (icons_dir, xp2, scenario, tex):
+            os.makedirs(d)
+        with open(os.path.join(icons_dir, "FontIcons.xml"), "w") as fh:
+            fh.write('<GameInfo><IconTextureAtlases>'
+                     '<Row Name="A" IconSize="10" IconsPerRow="2" '
+                     'IconsPerColumn="1" Filename="Font10.dds"/>'
+                     '<Row Name="A" IconSize="40" IconsPerRow="2" '
+                     'IconsPerColumn="1" Filename="Font40"/>'
+                     '</IconTextureAtlases><IconDefinitions>'
+                     '<Row Name="Faith" Atlas="A" Index="0"/>'
+                     '<Row Name="Empty" Atlas="A" Index="1"/>'
+                     '</IconDefinitions></GameInfo>')
+        with open(os.path.join(xp2, "XP2_Icons_Yields.xml"), "w") as fh:
+            fh.write('<GameInfo><IconDefinitions>'
+                     '<Replace Name="FAVOR" Atlas="A" Index="0"/>'
+                     '</IconDefinitions></GameInfo>')
+        with open(os.path.join(scenario, "Pirates_Icons.xml"), "w") as fh:
+            fh.write('<GameInfo><IconDefinitions>'
+                     '<Row Name="Pirate" Atlas="A" Index="0"/>'
+                     '</IconDefinitions></GameInfo>')
+        for size, color in ((10, (255, 0, 0, 255)), (40, (0, 0, 255, 255))):
+            sheet = Image.new("RGBA", (2 * size, size), (0, 0, 0, 0))
+            sheet.paste(color, (size // 5, size // 5, size - size // 5,
+                                size - size // 5))
+            # (a PNG under a .dds name: Pillow goes by the content)
+            sheet.save(os.path.join(tex, "Font{}.dds".format(size)), "PNG")
+        return fonticons.FontIcons(
+            fonticons.icon_xml_files(game),
+            fonticons.texture_dirs(os.path.join(self.tmp, "sdk")))
+
+    def test_font_icons(self):
+        icons = self._font_icons()
+        self.assertTrue(icons)
+        small = icons.get("Faith", 8)
+        self.assertEqual(small.size, (8, 8))
+        self.assertEqual(small.getpixel((4, 4))[:3], (255, 0, 0))  # 10 px
+        big = icons.get("Faith", 30)
+        self.assertEqual(big.getpixel((15, 15))[:3], (0, 0, 255))  # 40 px
+        trimmed = icons.get("Faith", 30, trim=True)
+        self.assertEqual(trimmed.getpixel((0, 0))[3], 255)  # no margin
+        self.assertIsNotNone(icons.get("favor"))     # case, expansion
+        self.assertIsNone(icons.get("Pirate"))       # scenarios skipped
+        self.assertIsNone(icons.get("Empty"))        # an empty cell
+        self.assertIsNone(icons.get("Bogus"))
+
+    def test_inline_icons(self):
+        """Showcase text keeps the tags of icons the game has, drops the
+        others, and draws them without crashing (also when cut short)."""
+        from unittest import mock
+        icons = self._font_icons()
+        with mock.patch.object(self.ws, "_font_icons", lambda: icons):
+            self.assertEqual(
+                self.ws._rich("+1 [ICON_Faith] Faith, +2 [ICON_Bogus] "
+                              "[COLOR_Red]X[ENDCOLOR][NEWLINE]y"),
+                "+1 [ICON_Faith] Faith, +2 X\ny")
+            from PIL import Image, ImageDraw
+            img = Image.new("RGBA", (300, 60), (0, 0, 0, 255))
+            draw = ImageDraw.Draw(img)
+            font = self.ws._font(20, "regular")
+            plain = self.ws._rich_width(draw, "+1  Faith", font)
+            self.assertGreater(self.ws._rich_width(
+                draw, "+1 [ICON_Faith] Faith", font), plain)
+            self.ws._draw_rich(img, draw, 0, 0, "+1 [ICON_Faith] Faith",
+                               font, (255, 255, 255, 255))
+            # (21 px: drawn from the atlas's 40 px size, blue)
+            self.assertTrue(any(img.getpixel((x, y))[:3] == (0, 0, 255)
+                                for x in range(300) for y in range(60)))
+            self.civs[0]["ability"]["desc"] = " ".join(
+                ["+2 [ICON_Faith] Faith."] * 400)
+            paths = self.ws.make_showcase(os.path.join(self.tmp, "s"),
+                                          self.civs, self.leaders)
+            self.assertTrue(paths)
+        with mock.patch.object(self.ws, "_font_icons", lambda: None):
+            self.assertEqual(self.ws._rich("+1 [ICON_Faith] Faith"),
+                             "+1 Faith")
 
     def test_transparent_images(self):
         """Transparent parts of the mod's images stay see-through in the
@@ -2439,6 +2555,27 @@ class ReligionTest(unittest.TestCase):
         self.assertEqual(religions.glowing_icon(MOMENT_IMAGE, 50, 0.5).size,
                          (50, 50))
 
+    def test_renameable(self):
+        no_data = self.NoData()
+        named = religions.normalize_religion(self.religion(), no_data, "TST")
+        self.assertFalse(named["renameable"])
+        self.assertIn(", 0, 0, 'COLOR_RELIGION_TST_OLD_WAYS');",
+                      religions.religion_sql(named))
+        # the founding screen asks for its name; no Civilopedia page (the
+        # game makes none), so no history texts
+        r = religions.normalize_religion(self.religion(
+            renameable=True, pedia={"history": "Unused."}), no_data, "TST")
+        self.assertTrue(r["renameable"])
+        self.assertIn(", 0, 1, 'COLOR_RELIGION_TST_OLD_WAYS');",
+                      religions.religion_sql(r))
+        self.assertEqual(religions.religion_text_rows(r),
+                         [("LOC_RELIGION_TST_OLD_WAYS_NAME", "Old Ways")])
+        # older projects: named
+        spec = self.religion()
+        del spec["renameable"]
+        self.assertFalse(religions.normalize_religion(
+            spec, no_data, "TST")["renameable"])
+
     def test_civilopedia(self):
         r = religions.normalize_religion(self.religion(pedia={
             "history": "First line\nsame paragraph.\n\n\nSecond."}),
@@ -2461,13 +2598,77 @@ class ReligionTest(unittest.TestCase):
         ink = religions.religion_moment_ink(MOMENT_IMAGE)
         self.assertEqual(ink.size, religions.RELIGION_MOMENT_SIZE)
         left, top, right, bottom = ink.getbbox()
-        # on the book's left page, foreshortened, in faded ink
-        self.assertTrue(30 <= left and right <= 145 and 15 <= top and
-                        bottom <= 100, ink.getbbox())
+        # on the book's left page, foreshortened, in faded ink (lower by
+        # the game's correction)
+        low = religions.GAME_Y_CORRECTION
+        self.assertTrue(30 <= left and right <= 145 and 15 + low <= top and
+                        bottom <= 100 + low, ink.getbbox())
         self.assertLessEqual(ink.getchannel("A").getextrema()[1], 220)
         self.assertEqual(ink.tobytes(),
                          religions.religion_moment_ink(MOMENT_IMAGE)
                          .tobytes())        # the same every build
+        # the angle: a vertical bar leans like the game's symbols (its
+        # bottom to the right) by default, the other way with a positive
+        # slant; turning a horizontal bar (at most 45 degrees) tilts it
+        def bar(vertical):
+            from PIL import Image, ImageDraw
+            path = os.path.join(tmp, "bar{}.png".format(int(vertical)))
+            img = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+            ImageDraw.Draw(img).rectangle(
+                (45, 5, 55, 95) if vertical else (5, 45, 95, 55),
+                fill=(255, 255, 255, 255))
+            img.save(path)
+            return path
+
+        def lean(img):
+            alpha = img.getchannel("A")
+            left, top, right, bottom = alpha.getbbox()
+
+            def centre(y):
+                row = [alpha.getpixel((x, y)) for x in range(img.width)]
+                return sum(x * v for x, v in enumerate(row)) / sum(row)
+            return centre(bottom - 3) - centre(top + 2)
+        upright = bar(True)
+        self.assertGreater(lean(religions.religion_moment_ink(upright)), 5)
+        self.assertLess(lean(religions.religion_moment_ink(upright, 14)), -5)
+        self.assertAlmostEqual(
+            lean(religions.religion_moment_ink(upright, 0)), 0, delta=1)
+        lying = bar(False)
+        def flatness(img):
+            left, top, right, bottom = img.getbbox()
+            return (right - left) / float(bottom - top)
+        flat = flatness(religions.religion_moment_ink(lying, 0))
+        turned = religions.religion_moment_ink(lying, 0, 45)
+        self.assertGreater(flat, 3)
+        self.assertLess(flatness(turned), 2)
+        # anticlockwise: its right end goes up (its top further right)
+        self.assertLess(lean(turned), -10)
+        self.assertEqual(religions.religion_moment_ink(lying, 0, 90).tobytes(),
+                         turned.tobytes())          # (at most 45)
+        for slant, rotation in ((-30, -45), (30, 45), (-99, 99)):
+            left, top, right, bottom = religions.religion_moment_ink(
+                MOMENT_IMAGE, slant, rotation).getbbox()
+            self.assertTrue(30 <= left and right <= 145 and 15 + low <= top
+                            and bottom <= 100 + low, (slant, rotation))
+        # its size and place
+        def box(**kw):
+            left, top, right, bottom = religions.religion_moment_ink(
+                upright, **kw).getbbox()
+            return left, top, right - left, bottom - top
+        base = box()
+        half, big = box(scale=50), box(scale=150)
+        self.assertAlmostEqual(half[3], base[3] * 0.5, delta=3)
+        self.assertGreater(big[3], base[3] * 1.3)
+        moved = box(x=20, y=-10)
+        self.assertEqual((moved[0] - base[0], moved[1] - base[1]),
+                         (20, -10))
+        # always inside the picture, however far it is moved
+        for kw in (dict(scale=150, x=40, y=30), dict(scale=150, x=-40,
+                                                    y=-30),
+                   dict(x=999, y=-999, scale=999)):
+            left, top, width, height = box(**kw)
+            self.assertTrue(left >= 0 and top >= 0 and left + width <= 166
+                            and top + height <= 122, kw)
         no_data = self.NoData()
 
         def moments(**spec):
@@ -2477,9 +2678,20 @@ class ReligionTest(unittest.TestCase):
         # automatic: the icon image in ink...
         _, (m,) = moments(icon_path=MOMENT_IMAGE)
         self.assertEqual((m["ink"], m["path"], m["texture"], m["size"],
-                          m["illustration"]),
+                          m["illustration"], m["ink_slant"],
+                          m["ink_rotation"]),
                          (MOMENT_IMAGE, "", "MOMENT_RELIGION_TST_OLD_WAYS",
-                          (166, 122), "MOMENT_ILLUSTRATION_RELIGION"))
+                          (166, 122), "MOMENT_ILLUSTRATION_RELIGION",
+                          religions.DEFAULT_INK_SLANT, 0))
+        # its own angle; an older spec (no angle) gets the default
+        _, (m,) = moments(icon_path=MOMENT_IMAGE, moment={
+            "path": "", "ink_slant": 8, "ink_rotation": -20,
+            "ink_scale": 120, "ink_x": -5, "ink_y": 500})
+        self.assertEqual((m["ink_slant"], m["ink_rotation"], m["ink_scale"],
+                          m["ink_x"], m["ink_y"]),
+                         (8, -20, 120, -5, religions.MAX_INK_Y))
+        _, (m,) = moments(icon_path=MOMENT_IMAGE, moment={"path": ""})
+        self.assertEqual(m["ink_slant"], religions.DEFAULT_INK_SLANT)
         # ... or a game religion's picture
         r, found = moments(icon_from="RELIGION_SHINTO")
         self.assertEqual((found, r["moment_from"]), ([], "RELIGION_SHINTO"))
@@ -2501,6 +2713,27 @@ class ReligionTest(unittest.TestCase):
                       "'MOMENT_RELIGION_TST_OLD_WAYS.dds'", sql)
         self.assertIn("-- Old Ways: the historic moment picture of "
                       "RELIGION_SHINTO", sql)
+
+    def test_moment_on_book(self):
+        from PIL import Image
+        book = Image.new("RGBA", (456, 332), (0, 0, 0, 255))
+        dot = Image.new("RGBA", religions.RELIGION_MOMENT_SIZE,
+                        (0, 0, 0, 0))
+        dot.putpixel((0, 0), (255, 0, 0, 255))
+        out = religions.on_book(dot, book)
+        # centred, then moved by the game's offset (-47, 47), less the
+        # correction the symbol is moved down by in the picture
+        self.assertEqual(out.getpixel((
+            (456 - 166) // 2 - 47,
+            (332 - 122) // 2 + 47 - religions.GAME_Y_CORRECTION)),
+            (255, 0, 0, 255))
+        self.assertEqual(book.getpixel((98, 152)), (0, 0, 0, 255))
+        if religions.moment_book() is None:
+            self.skipTest("needs the Civ VI SDK Assets")
+        self.assertEqual(religions.moment_book().size, (456, 332))
+        for religion in ("RELIGION_BUDDHISM", "RELIGION_CUSTOM_1"):
+            self.assertEqual(religions.game_moment_picture(religion).size,
+                             religions.RELIGION_MOMENT_SIZE, religion)
 
     def test_opacity(self):
         from PIL import Image

@@ -10,7 +10,9 @@ A religion spec is a plain dict:
     the icon image is, its glow included), pedia {history} (its
     Civilopedia page: paragraphs separated by a blank line), moment
     {path, mask, half, sepia} (the "religion founded" historic moment's
-    picture; no path: automatic, see religion_moments).
+    picture; no path: automatic, see religion_moments), renameable (the
+    player names it when founding it, like the game's spare "Custom
+    Religion"s; its name is then only its label in the founding list).
 
 The game needs a Religions row (with a Colors row for its color) and an
 icon named ICON_<ReligionType> at the sizes the UI asks for. A religion
@@ -18,6 +20,7 @@ appears on the religion-founding screen by itself; how many religions a
 game allows depends on the map size, not on how many exist.
 """
 
+import functools
 import os
 import random
 import uuid
@@ -51,11 +54,54 @@ RELIGION_MOMENT_SIZE = (166, 122)
 INK_COLOR = (70, 52, 22)
 INK_ALPHA = 0.85
 INK_BOX = (105, 78)
-INK_CENTRE = (88, 57)
+# In the game the picture shows a little higher on the book than the
+# preview put it. This many pixels move the ink symbol down in the
+# picture, and the picture up on the preview's book - so the preview
+# looks the same and the game shows the symbol where the preview does.
+# Fine-tune it here: larger moves the symbol further down in the game.
+GAME_Y_CORRECTION = 8
+INK_CENTRE = (88, 57 + GAME_Y_CORRECTION)
+# The book the game draws the picture on (456 x 332, uncooked only in the
+# SDK Assets; for previews - the mod never contains it), and where on it
+# the picture goes: centred, moved by this offset (ReligionIllustration's
+# Offset="-47,47", corrected as above)
+MOMENT_BOOK_TEXTURE = "PM_FoundedReligion"
+MOMENT_PAGE_OFFSET = (-47, 47 - GAME_Y_CORRECTION)
+INK_SQUASH = 0.74
+# The symbol's angle, in degrees. Slant: a shear like the page's slope
+# (negative: the bottom leans right, as in the game's own pictures);
+# rotation: anticlockwise.
+DEFAULT_INK_SLANT = -14       # (measured on the game's Buddhism picture)
+MAX_INK_SLANT, MAX_INK_ROTATION = 30, 45
+# Its size (percent of INK_BOX) and place (pixels from INK_CENTRE, right
+# and down); it is always kept inside the picture
+MIN_INK_SCALE, MAX_INK_SCALE = 50, 150
+MAX_INK_X, MAX_INK_Y = 40, 30
+# the moment spec's ink keys: (key, default, low, high)
+INK_SETTINGS = [("ink_slant", DEFAULT_INK_SLANT, -MAX_INK_SLANT,
+                 MAX_INK_SLANT),
+                ("ink_rotation", 0, -MAX_INK_ROTATION, MAX_INK_ROTATION),
+                ("ink_scale", 100, MIN_INK_SCALE, MAX_INK_SCALE),
+                ("ink_x", 0, -MAX_INK_X, MAX_INK_X),
+                ("ink_y", 0, -MAX_INK_Y, MAX_INK_Y)]
 
 
 def new_moment_spec():
-    return {"path": "", "mask": False, "half": False, "sepia": False}
+    return dict({"path": "", "mask": False, "half": False, "sepia": False},
+                **{key: default for key, default, _, _ in INK_SETTINGS})
+
+
+def ink_settings(moment):
+    """The ink keys of a moment spec, read and kept in range (an older
+    spec without them gets the defaults)."""
+    out = {}
+    for key, default, low, high in INK_SETTINGS:
+        try:
+            value = float(moment.get(key, default))
+        except (TypeError, ValueError):
+            value = default
+        out[key] = max(low, min(high, value))
+    return out
 
 
 def new_religion_spec():
@@ -64,15 +110,24 @@ def new_religion_spec():
             "glow": False, "glow_strength": DEFAULT_GLOW_STRENGTH,
             "opacity": MAX_OPACITY,
             "pedia": {"history": ""},
+            "renameable": False,
             "moment": new_moment_spec()}
 
 
-def religion_moment_ink(icon_path):
+def religion_moment_ink(icon_path, slant=DEFAULT_INK_SLANT, rotation=0,
+                        scale=100, x=0, y=0):
     """The religion's icon as the game draws religion symbols in the
     "religion founded" moment: a brown ink stamp, foreshortened like the
     book's page, with a grainy texture (RELIGION_MOMENT_SIZE RGBA). Only
-    the image's shapes count (its colors, glow and opacity do not)."""
+    the image's shapes count (its colors, glow and opacity do not).
+    slant / rotation: its angle in degrees (see DEFAULT_INK_SLANT);
+    scale: its size in percent; x / y: its place, in pixels right / down
+    of where the game's symbols are (see INK_SETTINGS)."""
+    import math
     from PIL import Image, ImageChops, ImageFilter
+    settings = ink_settings({"ink_slant": slant, "ink_rotation": rotation,
+                             "ink_scale": scale, "ink_x": x, "ink_y": y})
+    slant, rotation = settings["ink_slant"], settings["ink_rotation"]
     img = Image.open(icon_path).convert("RGBA")
     w, h = img.size
     side = min(w, h)
@@ -82,24 +137,35 @@ def religion_moment_ink(icon_path):
     shape = img.resize((work, work), Image.LANCZOS).getchannel("A")
     # thin outline icons: a little bolder, like stamped ink
     shape = shape.filter(ImageFilter.MaxFilter(5))
-    bbox = shape.getbbox()
     out = Image.new("RGBA", RELIGION_MOMENT_SIZE, INK_COLOR + (0,))
+    if rotation:
+        shape = shape.rotate(rotation, resample=Image.BICUBIC, expand=True)
+    bbox = shape.getbbox()
     if not bbox:
         return out
     shape = shape.crop(bbox)
-    # fit the box, then squash: the page is seen at an angle
-    box_w, box_h = INK_BOX
-    scale = min(box_w / float(shape.width),
-                box_h / 0.74 / float(shape.height))
-    size = (max(1, int(round(shape.width * scale))),
-            max(1, int(round(shape.height * scale * 0.74))))
-    shape = shape.resize(size, Image.LANCZOS)
-    # a slight shear, like the page's slope
-    shear = 0.12
-    shape = shape.transform(
-        (shape.width + int(shape.height * shear), shape.height),
-        Image.AFFINE, (1, shear, -shape.height * shear, 0, 1, 0),
-        resample=Image.BICUBIC)
+    # squash: the page is seen at an angle
+    shape = shape.resize((shape.width, max(1, int(round(
+        shape.height * INK_SQUASH)))), Image.LANCZOS)
+    # slant, like the page's slope: output x takes source x + k * y + c
+    # (k < 0: the bottom rows move right)
+    k = math.tan(math.radians(slant))
+    if k:
+        grow = int(math.ceil(abs(k) * shape.height))
+        shape = shape.transform(
+            (shape.width + grow, shape.height), Image.AFFINE,
+            (1, k, -grow if k > 0 else 0, 0, 1, 0),
+            resample=Image.BICUBIC)
+        shape = shape.crop(shape.getbbox() or (0, 0) + shape.size)
+    # fit the page's box (whatever the angle), at the chosen size - never
+    # larger than the picture
+    size = settings["ink_scale"] / 100.0
+    box_w = min(INK_BOX[0] * size, RELIGION_MOMENT_SIZE[0])
+    box_h = min(INK_BOX[1] * size, RELIGION_MOMENT_SIZE[1])
+    fit = min(box_w / float(shape.width), box_h / float(shape.height))
+    shape = shape.resize((max(1, int(round(shape.width * fit))),
+                          max(1, int(round(shape.height * fit)))),
+                         Image.LANCZOS)
     # grain, mottled like worn ink (seeded: the same every build)
     rnd = random.Random(1)
     grain = Image.frombytes("L", shape.size, bytes(
@@ -109,8 +175,12 @@ def religion_moment_ink(icon_path):
         shape.point(lambda v: int(v * INK_ALPHA)), grain)
     layer = Image.new("RGBA", shape.size, INK_COLOR + (0,))
     layer.putalpha(alpha)
-    out.alpha_composite(layer, (INK_CENTRE[0] - shape.width // 2,
-                                INK_CENTRE[1] - shape.height // 2))
+    # its place, kept inside the picture
+    left = INK_CENTRE[0] + int(round(settings["ink_x"])) - shape.width // 2
+    top = INK_CENTRE[1] + int(round(settings["ink_y"])) - shape.height // 2
+    left = max(0, min(out.width - shape.width, left))
+    top = max(0, min(out.height - shape.height, top))
+    out.alpha_composite(layer, (left, top))
     return out
 
 
@@ -232,10 +302,68 @@ def normalize_religion(spec, data, prefix=""):
         # moment_from is copied; see religion_moment_sql)
         "moments": moments,
         "moment_from": icon_from or FALLBACK_RELIGION_ICON,
-        # its Civilopedia page's History chapter
-        "history": history_paragraphs((spec.get("pedia") or {}).get(
-            "history")),
+        # the player names it when founding it (Religions.
+        # RequiresCustomName: the founding screen asks for a name)
+        "renameable": bool(spec.get("renameable")),
+        # its Civilopedia page's History chapter (the game makes no page
+        # for a renameable religion: none then)
+        "history": [] if spec.get("renameable") else history_paragraphs(
+            (spec.get("pedia") or {}).get("history")),
     }
+
+
+@functools.lru_cache(maxsize=32)
+def sdk_texture(name):
+    """A texture of the installed SDK Assets as RGBA (for previews), or
+    None without them, the texture or Pillow."""
+    from .fonticons import find_sdk_assets, texture_dirs
+    sdk = find_sdk_assets()
+    if not sdk:
+        return None
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    for folder in texture_dirs(sdk):
+        path = os.path.join(folder, name + ".dds")
+        if os.path.isfile(path):
+            try:
+                with Image.open(path) as img:
+                    return img.convert("RGBA")
+            except Exception:           # unreadable texture
+                continue
+    return None
+
+
+def moment_book():
+    """The game's "religion founded" book picture (RGBA), read from the
+    installed SDK Assets, or None (see sdk_texture)."""
+    return sdk_texture(MOMENT_BOOK_TEXTURE)
+
+
+def game_moment_picture(religion_type):
+    """A game religion's own "religion founded" picture (166 x 122 RGBA)
+    from the SDK Assets, or None: RELIGION_CUSTOM_1 ->
+    PM_FoundedReligion_Custom1, as the game names them."""
+    if not religion_type.startswith("RELIGION_"):
+        return None
+    name = "".join(part.title() for part in
+                   religion_type[len("RELIGION_"):].split("_"))
+    return sdk_texture("{}_{}".format(MOMENT_BOOK_TEXTURE, name))
+
+
+def on_book(picture, book=None):
+    """picture (RELIGION_MOMENT_SIZE RGBA) on the book where the game
+    draws it, as the moment shows it; None without the book (see
+    moment_book)."""
+    book = book if book is not None else moment_book()
+    if book is None:
+        return None
+    out = book.copy()
+    x = (out.width - picture.width) // 2 + MOMENT_PAGE_OFFSET[0]
+    y = (out.height - picture.height) // 2 + MOMENT_PAGE_OFFSET[1]
+    out.alpha_composite(picture.convert("RGBA"), (x, y))
+    return out
 
 
 def religion_moments(moment, name, slug, icon_path):
@@ -249,14 +377,16 @@ def religion_moments(moment, name, slug, icon_path):
             name, path))
     if not path and not icon_path:
         return []
-    return [{"item": slug, "illustration": MOMENT_RELIGION[0],
-             "data_type": MOMENT_RELIGION[1], "path": path,
-             # (automatic: drawn from the icon image)
-             "ink": "" if path else icon_path,
-             "texture": "MOMENT_" + slug, "size": RELIGION_MOMENT_SIZE,
-             "mask": bool(path and moment.get("mask")),
-             "half": bool(path and moment.get("half")),
-             "sepia": bool(path and moment.get("sepia"))}]
+    return [dict({"item": slug, "illustration": MOMENT_RELIGION[0],
+                  "data_type": MOMENT_RELIGION[1], "path": path,
+                  # (automatic: drawn from the icon image, with its angle,
+                  # size and place - see ink_settings)
+                  "ink": "" if path else icon_path,
+                  "texture": "MOMENT_" + slug, "size": RELIGION_MOMENT_SIZE,
+                  "mask": bool(path and moment.get("mask")),
+                  "half": bool(path and moment.get("half")),
+                  "sepia": bool(path and moment.get("sepia"))},
+                 **ink_settings(moment))]
 
 
 def religion_moment_sql(r):
@@ -279,18 +409,22 @@ def religion_moment_sql(r):
 
 
 def religion_sql(r):
-    """Gameplay SQL of one religion."""
+    """Gameplay SQL of one religion. A renameable one has
+    RequiresCustomName: the founding screen asks the player for its name
+    (as for the game's RELIGION_CUSTOM_* religions)."""
     return """-----------------------------------------------
--- {name} ({slug}), a new religion
+-- {name} ({slug}), a new {what}religion
 -----------------------------------------------
 INSERT INTO Types (Type, Kind)
 VALUES ({slug_s}, 'KIND_RELIGION');
 
 INSERT INTO Religions (ReligionType, Name, IconString, Pantheon, RequiresCustomName, Color)
-VALUES ({slug_s}, {name_tag}, {icon_string}, 0, 0, {color});
+VALUES ({slug_s}, {name_tag}, {icon_string}, 0, {custom}, {color});
 """.format(name=r["name"], slug=r["slug"], slug_s=sql_str(r["slug"]),
+           what="renameable " if r.get("renameable") else "",
            name_tag=sql_str(r["name_tag"]),
            icon_string=sql_str(r["icon_string"]),
+           custom=1 if r.get("renameable") else 0,
            color=sql_str(r["color_type"]))
 
 

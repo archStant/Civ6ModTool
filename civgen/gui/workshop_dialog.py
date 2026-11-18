@@ -11,7 +11,8 @@ from tkinter import messagebox, ttk
 from ..workshop import (MAX_DESCRIPTION, MAX_TITLE, PREVIEW_STYLES,
                         VISIBILITIES,
                         check_mod, find_modinfo, generated_description,
-                        launch_uploader, make_preview, normalize_workshop,
+                        launch_uploader, make_preview, make_showcase,
+                        normalize_workshop,
                         steam_running, workshop_url)
 from . import theme
 from .widgets import (HelpBox, ImagePreview, ScrollFrame, add_tooltip,
@@ -148,11 +149,19 @@ class WorkshopDialog(tk.Toplevel):
                         "moment pictures, the civilization's icon and the "
                         "uniques' icons, with the title and what the mod "
                         "adds."}[value])
-        ttk.Label(body, text="(a .jpg or .png under 1 MB, shown on the "
-                             "Workshop page; square looks best)",
-                  foreground=theme.hint()).grid(row=8, column=1,
-                                                columnspan=2, sticky="w",
-                                                padx=6)
+        hint_row = ttk.Frame(body)
+        hint_row.grid(row=8, column=1, columnspan=2, sticky="w", padx=6)
+        ttk.Label(hint_row, text="(a .jpg or .png under 1 MB, shown on the "
+                                 "Workshop page; square looks best)",
+                  foreground=theme.hint()).pack(side="left")
+        showcase = ttk.Button(hint_row, text="Make per-civ / per-leader "
+                              "images...", command=self.make_showcase)
+        showcase.pack(side="left", padx=(16, 0))
+        add_tooltip(showcase, "A 16:9 image per civilization and per "
+                    "leader, like the game's loading screen: its art with "
+                    "its abilities and uniques listed. The uploader takes "
+                    "one preview only - add these on the Workshop page "
+                    "under 'Add/edit images & videos' after uploading.")
 
         ttk.Label(body, text="Change notes").grid(row=9, column=0,
                                                   sticky="nw", **pad)
@@ -214,6 +223,35 @@ class WorkshopDialog(tk.Toplevel):
             return
         self.preview.set("")            # reload the thumbnail
         self.preview.set(path)
+
+    def make_showcase(self):
+        folder = os.path.join(os.path.dirname(self.app.mod_dir()),
+                              os.path.basename(self.app.mod_dir()) +
+                              "_Workshop", "showcase")
+        try:
+            paths = make_showcase(folder, self.app.project["civs"],
+                                  self.app.project["leaders"],
+                                  self.app.civ_display_name)
+        except ImportError:
+            messagebox.showerror("Pillow needed", "Making the images needs "
+                                 "Pillow (pip install Pillow).", parent=self)
+            return
+        except OSError as exc:
+            messagebox.showerror("Could not make the images", str(exc),
+                                 parent=self)
+            return
+        if not paths:
+            messagebox.showinfo("Nothing to show", "No civilization or "
+                                "leader has art, abilities or uniques to "
+                                "show yet.", parent=self)
+            return
+        messagebox.showinfo(
+            "Showcase images", "Made {} image{} in\n{}\n\nAdd them on the "
+            "Workshop page under 'Add/edit images & videos'.".format(
+                len(paths), "" if len(paths) == 1 else "s", folder),
+            parent=self)
+        if hasattr(os, "startfile"):
+            os.startfile(folder)
 
     def view_item(self):
         url = workshop_url(self.published.get())

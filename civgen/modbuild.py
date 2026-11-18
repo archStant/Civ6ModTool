@@ -26,7 +26,9 @@ from .leaders import (colors_fragment, config_block,
                       needs_art, normalize_spec, text_rows, NO_RELIGION)
 from .civs import (CIV_ICON_SIZES, DEFAULT_MUSIC, civ_gameplay_sql,
                    civ_icons_sql, civ_text_rows, normalize_civ, sql_header)
-from .religions import (RELIGION_ICON_SIZES, glowing_icon, normalize_religion,
+from .religions import (INK_CENTRE, INK_SETTINGS, RELIGION_ICON_SIZES,
+                        glowing_icon,
+                        normalize_religion,
                         religion_color_row, religion_icons_sql,
                         religion_moment_ink, religion_moment_sql,
                         religion_sql, religion_text_rows)
@@ -1229,11 +1231,18 @@ def build_art(ctxs, folder, mod_dir, report, cooker,
         if m.get("ink"):
             moment_src = os.path.join(pantry, m["texture"] + "_ink.png")
 
+            # its angle, size and place (see religions.ink_settings)
+            ink = [m.get(key, default)
+                   for key, default, _, _ in INK_SETTINGS]
+
             def draw():
-                religion_moment_ink(m["ink"]).save(moment_src)
+                religion_moment_ink(m["ink"], *ink).save(moment_src)
                 report.append("drew " + m["texture"])
+            # (the settings are part of the key: a changed one redraws it -
+            # so is where the symbol goes, see religions.GAME_Y_CORRECTION)
             convert(m["texture"], moment_src, size=size, make=draw,
-                    key=("ink", file_sig(m["ink"])))
+                    key=("ink", file_sig(m["ink"])) + tuple(ink) +
+                    tuple(INK_CENTRE))
             return
         mask = asset_path(MOMENT_MASK) if m["mask"] else None
         if m["mask"] and not mask:

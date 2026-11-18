@@ -8,10 +8,14 @@ from tkinter import colorchooser, messagebox, ttk
 
 from ..art import (LIST_ICON_SIZE, MOMENT_HALF_OPACITY, MOMENT_MASK,
                    apply_image_mask)
-from ..religions import (DEFAULT_GLOW_STRENGTH, DEFAULT_RELIGION_COLOR,
-                         FALLBACK_RELIGION_ICON, MAX_OPACITY, MIN_OPACITY,
+from ..religions import (DEFAULT_GLOW_STRENGTH, DEFAULT_INK_SLANT,
+                         DEFAULT_RELIGION_COLOR, FALLBACK_RELIGION_ICON,
+                         INK_SETTINGS, MAX_INK_ROTATION, MAX_INK_SLANT,
+                         MAX_OPACITY,
+                         MIN_OPACITY,
                          RELIGION_MOMENT_SIZE, glow_strength, glowing_icon,
-                         icon_opacity, religion_icon_preview,
+                         game_moment_picture, icon_opacity, moment_book,
+                         on_book, religion_icon_preview,
                          religion_moment_ink, religion_slug)
 from ..util import asset_path
 from . import theme
@@ -95,10 +99,24 @@ class ReligionEditor(tk.Toplevel):
         self.slug_label = ttk.Label(body)
         self.slug_label.grid(row=1, column=2, sticky="w", **pad)
         self.name_var.trace_add("write", lambda *_: self._refresh())
+        # renameable, like the game's spare "Custom Religion"s
+        self.renameable_var = tk.BooleanVar(
+            value=bool(spec.get("renameable")))
+        renameable = ttk.Checkbutton(
+            body, text="Player names it when founding it",
+            variable=self.renameable_var)
+        renameable.grid(row=2, column=1, columnspan=2, sticky="w", **pad)
+        add_tooltip(renameable, (
+            "Like the game's own spare religions: the founding screen "
+            "asks the player for the religion's name. The name above is "
+            "then only its label in the founding screen's list.\n\nThe "
+            "game makes no Civilopedia page for such a religion."))
+        self.renameable_var.trace_add(
+            "write", lambda *_: self._refresh_pedia())
 
-        ttk.Label(body, text="Color").grid(row=2, column=0, sticky="w", **pad)
+        ttk.Label(body, text="Color").grid(row=3, column=0, sticky="w", **pad)
         color_row = ttk.Frame(body)
-        color_row.grid(row=2, column=1, columnspan=2, sticky="w", **pad)
+        color_row.grid(row=3, column=1, columnspan=2, sticky="w", **pad)
         self.swatch = tk.Label(color_row, width=4, relief="solid", bd=1,
                                cursor="hand2")
         self.swatch.pack(side="left")
@@ -110,7 +128,7 @@ class ReligionEditor(tk.Toplevel):
                        "behind its icon").pack(side="left")
 
         icon = ttk.LabelFrame(body, text="Icon", padding=(8, 4))
-        icon.grid(row=3, column=0, columnspan=3, sticky="we", pady=(10, 3))
+        icon.grid(row=4, column=0, columnspan=3, sticky="we", pady=(10, 3))
         self.icon_mode = tk.StringVar(
             value=ICON_FILE if spec.get("icon_path") else ICON_RELIGION)
         self.icon_path = tk.StringVar(value=spec.get("icon_path", ""))
@@ -175,7 +193,7 @@ class ReligionEditor(tk.Toplevel):
                     "religions (empty: a spare icon of the game's)")
 
         preview = ttk.Frame(body)
-        preview.grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        preview.grid(row=5, column=0, columnspan=3, sticky="w", pady=(8, 0))
         ttk.Label(preview, text="Preview").pack(side="left", padx=6)
         self.preview = ttk.Label(preview)
         self.preview.pack(side="left", padx=6)
@@ -195,6 +213,10 @@ class ReligionEditor(tk.Toplevel):
             "The religion's page in the Civilopedia (Religions section): "
             "its History chapter. The page also shows the religion's icon "
             "and the leaders who favor it.")).pack(anchor="w", pady=(0, 8))
+        # (shown for a renameable religion, which has no page)
+        self.pedia_note = ttk.Label(body, foreground=theme.hint(),
+                                    wraplength=640, justify="left")
+        self.pedia_note.pack(anchor="w", pady=(0, 8))
         ttk.Label(body, text="History (separate paragraphs with a blank "
                              "line)").pack(anchor="w", pady=(0, 2))
         box = ttk.Frame(body)
@@ -207,6 +229,23 @@ class ReligionEditor(tk.Toplevel):
         self.history.pack(side="left", fill="both", expand=True)
         scroll.pack(side="left", fill="y")
         self.history.insert("1.0", pedia.get("history", ""))
+        self._history_fg = self.history.cget("foreground")
+        self._refresh_pedia()
+
+    def _refresh_pedia(self):
+        """A renameable religion has no Civilopedia page: its history is
+        kept (for if it is made a named one again) but greyed out."""
+        if not hasattr(self, "history"):
+            return                      # (still building the tabs)
+        renameable = self.renameable_var.get()
+        self.history.configure(
+            state="disabled" if renameable else "normal",
+            foreground=theme.hint() if renameable else self._history_fg)
+        self.pedia_note.configure(text=(
+            "This religion is named by the player when founding it, and "
+            "the game makes no Civilopedia page for such religions (as for "
+            "its own \"Custom Religion\"s) - the history below is not "
+            "used.") if renameable else "")
 
     def _build_moment(self, body):
         moment = self.spec.get("moment") or {}
@@ -227,11 +266,60 @@ class ReligionEditor(tk.Toplevel):
                       "picture). With the icon of one of the game's "
                       "religions: that religion's picture.")).grid(
             row=1, column=1, sticky="w", padx=6, pady=3)
+        # the ink symbol's angle (automatic, from the icon image)
+        angle = ttk.Frame(body)
+        angle.grid(row=2, column=1, sticky="w", padx=6, pady=(0, 6))
+        slant = ttk.Label(angle, text="Slant")
+        slant.grid(row=0, column=0, sticky="w")
+        add_tooltip(slant, (
+            "How the symbol leans, like the book's page: negative leans "
+            "its bottom to the right, as the game's own symbols do "
+            "({}° by default).".format(DEFAULT_INK_SLANT)))
+        self.ink_slant, self.slant_scale, self.slant_label = self._slider(
+            angle, 0, moment.get("ink_slant", DEFAULT_INK_SLANT),
+            -MAX_INK_SLANT, MAX_INK_SLANT, DEFAULT_INK_SLANT)
+        self.slant_reset = ttk.Button(
+            angle, text="Game default", command=lambda: (
+                self.slant_scale.set(DEFAULT_INK_SLANT),
+                self.ink_slant.set(DEFAULT_INK_SLANT)))
+        self.slant_reset.grid(row=0, column=4, sticky="w", padx=(6, 0))
+        rotation = ttk.Label(angle, text="Rotation")
+        rotation.grid(row=1, column=0, sticky="w", pady=(4, 0),
+                      padx=(0, 14))
+        add_tooltip(rotation, "Turns the symbol: positive turns it "
+                    "anticlockwise, negative clockwise.")
+        self.ink_rotation, self.rotation_scale, self.rotation_label = \
+            self._slider(angle, 1, moment.get("ink_rotation", 0),
+                         -MAX_INK_ROTATION, MAX_INK_ROTATION, 0)
+        # its size and place on the page: {key: (var, scale, label,
+        # default, unit)}
+        self.ink_place = {}
+        for row, (key, text, unit, tip) in enumerate((
+                ("ink_scale", "Size", "%",
+                 "The symbol's size (100%: like the game's own)."),
+                ("ink_x", "Left / right", " px",
+                 "Moves the symbol right (positive) or left (negative) on "
+                 "the page. It always stays inside the picture."),
+                ("ink_y", "Up / down", " px",
+                 "Moves the symbol down (positive) or up (negative) on the "
+                 "page. It always stays inside the picture.")), 2):
+            default, low, high = next((d, lo, hi) for k, d, lo, hi in
+                                      INK_SETTINGS if k == key)
+            label = ttk.Label(angle, text=text)
+            label.grid(row=row, column=0, sticky="w", pady=(4, 0))
+            add_tooltip(label, tip)
+            var, scale, value = self._slider(
+                angle, row, moment.get(key, default), low, high, default)
+            self.ink_place[key] = (var, scale, value, default, unit)
+        self.place_reset = ttk.Button(angle, text="Centre",
+                                      command=self._reset_ink_place)
+        self.place_reset.grid(row=2, column=4, sticky="w", padx=(6, 0))
+        add_tooltip(self.place_reset, "Back to the game's size and place.")
         ttk.Radiobutton(body, text="Own image", value=MOMENT_OWN,
                         variable=self.moment_mode).grid(
-            row=2, column=0, sticky="w", padx=6, pady=3)
+            row=3, column=0, sticky="w", padx=6, pady=3)
         own = ttk.Frame(body)
-        own.grid(row=2, column=1, sticky="w", padx=6, pady=3)
+        own.grid(row=3, column=1, sticky="w", padx=6, pady=3)
         self.moment_path = tk.StringVar(value=moment.get("path", ""))
         ttk.Entry(own, textvariable=self.moment_path, width=40).pack(
             side="left")
@@ -239,7 +327,7 @@ class ReligionEditor(tk.Toplevel):
             browse_image(self, self.moment_path, "Historic moment image"),
             self.moment_mode.set(MOMENT_OWN))).pack(side="left", padx=6)
         checks = ttk.Frame(body)
-        checks.grid(row=3, column=1, sticky="w", padx=6)
+        checks.grid(row=4, column=1, sticky="w", padx=6)
         self.moment_flags = {}
         for key, text in (("mask", "Fade mask"), ("half", "75% transparent"),
                           ("sepia", "Sepia")):
@@ -251,23 +339,48 @@ class ReligionEditor(tk.Toplevel):
             self.moment_flags["mask"][1].configure(
                 text="Fade mask (assets/{} not found)".format(MOMENT_MASK))
         preview = ttk.Frame(body)
-        preview.grid(row=4, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        preview.grid(row=5, column=0, columnspan=2, sticky="w", pady=(12, 0))
         ttk.Label(preview, text="Preview").pack(side="left", padx=6,
                                                 anchor="n")
-        self.moment_preview = tk.Label(preview, bd=0,
-                                       background=PARCHMENT_HEX)
-        self.moment_preview.pack(side="left", padx=6)
-        self.moment_note = ttk.Label(preview, foreground=theme.hint(),
-                                     wraplength=260, justify="left")
-        self.moment_note.pack(side="left", padx=6, anchor="n")
-        for var in [self.moment_mode, self.moment_path] + [
-                v for v, _ in self.moment_flags.values()]:
+        # on the game's own book (from the SDK Assets) when installed,
+        # else on its page's colour, twice the size; the room is kept
+        # from the start, so the (fixed-size) window never grows
+        self.moment_book = moment_book()
+        width, height = self.moment_book.size if self.moment_book \
+            else (RELIGION_MOMENT_SIZE[0] * 2, RELIGION_MOMENT_SIZE[1] * 2)
+        room = ttk.Frame(preview, width=width, height=height)
+        room.pack(side="left", padx=6)
+        room.pack_propagate(False)
+        self.moment_preview = tk.Label(room, bd=0)
+        self.moment_preview.pack(expand=True)
+        # (below the picture: beside it, it would not fit the window)
+        self.moment_note = ttk.Label(body, foreground=theme.hint(),
+                                     wraplength=width, justify="left")
+        self.moment_note.grid(row=6, column=0, columnspan=2, sticky="w",
+                              padx=(70, 6), pady=(4, 0))
+        for var in [self.moment_mode, self.moment_path, self.ink_slant,
+                    self.ink_rotation] + [
+                v for v, _ in self.moment_flags.values()] + [
+                place[0] for place in self.ink_place.values()]:
             var.trace_add("write", lambda *_: self._refresh_moment())
         self._refresh_moment()
 
+    def _reset_ink_place(self):
+        """The ink symbol's size and place back to the game's."""
+        for var, scale, _, default, _ in self.ink_place.values():
+            scale.set(default)
+            var.set(default)
+
+    def _ink_args(self):
+        """religion_moment_ink's angle, size and place arguments."""
+        return [self.ink_slant.get(), self.ink_rotation.get()] + [
+            self.ink_place[key][0].get()
+            for key in ("ink_scale", "ink_x", "ink_y")]
+
     def _refresh_moment(self):
-        """The moment picture as it will be made, on a page-coloured
-        backdrop, twice the size."""
+        """The moment picture as it will be made, on the game's book as
+        the moment shows it (or on a page-coloured backdrop, twice the
+        size, without the SDK Assets)."""
         if self.moment_preview is None:
             return
         own = self.moment_mode.get() == MOMENT_OWN
@@ -276,6 +389,17 @@ class ReligionEditor(tk.Toplevel):
             check.state(["!disabled"] if usable else ["disabled"])
         icon = self.icon_path.get().strip() \
             if self.icon_mode.get() == ICON_FILE else ""
+        # the angle only matters for the ink drawn from the icon image
+        inked = not own and bool(icon)
+        for widget in [self.slant_scale, self.rotation_scale,
+                       self.slant_reset, self.place_reset] + [
+                place[1] for place in self.ink_place.values()]:
+            widget.state(["!disabled"] if inked else ["disabled"])
+        self.slant_label.configure(text="{}°".format(self.ink_slant.get()))
+        self.rotation_label.configure(
+            text="{}°".format(self.ink_rotation.get()))
+        for var, _, label, _, unit in self.ink_place.values():
+            label.configure(text="{}{}".format(var.get(), unit))
         note, img = "", None
         self._moment_photo = None
         try:
@@ -293,17 +417,24 @@ class ReligionEditor(tk.Toplevel):
                 else:
                     note = "(pick an image)"
             elif icon and os.path.isfile(icon):
-                img = religion_moment_ink(icon)
+                img = religion_moment_ink(icon, *self._ink_args())
             else:
                 source = self.icon_from.get_type() or \
                     FALLBACK_RELIGION_ICON
                 note = "Uses the picture of {}.".format(
                     self.app.data.type_name("religion", source))
-            if img is not None:
+                img = game_moment_picture(source)
+            if img is not None and self.moment_book is not None:
+                self._moment_photo = ImageTk.PhotoImage(
+                    on_book(img, self.moment_book))
+            elif img is not None:
                 page = Image.new("RGBA", img.size, PARCHMENT_RGB)
                 page.alpha_composite(img)
                 self._moment_photo = ImageTk.PhotoImage(page.resize(
                     (img.width * 2, img.height * 2), Image.LANCZOS))
+            if self.moment_book is None and not note:
+                note = ("(The game's book picture shows here when the "
+                        "Civ VI SDK Assets are installed.)")
         except ImportError:
             note = "(install Pillow for a preview)"
         except Exception as exc:        # unreadable image
@@ -311,20 +442,21 @@ class ReligionEditor(tk.Toplevel):
         self.moment_preview.configure(image=self._moment_photo or "")
         self.moment_note.configure(text=note)
 
-    def _slider(self, parent, row, value, low, high):
-        """A percentage slider in row of parent's grid: (IntVar, scale,
-        label showing the value)."""
+    def _slider(self, parent, row, value, low, high, default=None):
+        """A slider in row of parent's grid (columns 2-3): (IntVar, scale,
+        label for its value). default: for an unreadable value (None:
+        high)."""
         try:
-            value = int(float(value))
+            value = int(round(float(value)))
         except (TypeError, ValueError):
-            value = high
+            value = high if default is None else default
         var = tk.IntVar(value=max(low, min(high, value)))
         scale = ttk.Scale(parent, from_=low, to=high,
                           length=theme.scaled(160),
                           command=lambda v: var.set(int(float(v))))
         scale.set(var.get())
         scale.grid(row=row, column=2, sticky="w", pady=(4 if row else 0, 0))
-        label = ttk.Label(parent, width=5)
+        label = ttk.Label(parent, width=7)      # (room for "-40 px")
         label.grid(row=row, column=3, sticky="w", padx=4,
                    pady=(4 if row else 0, 0))
         return var, scale, label
@@ -391,13 +523,18 @@ class ReligionEditor(tk.Toplevel):
             "glow": bool(self.glow_var.get()),
             "glow_strength": int(self.glow_strength.get()),
             "opacity": int(self.opacity.get()),
+            "renameable": bool(self.renameable_var.get()),
             "pedia": dict(spec.get("pedia") or {},
                           history=self.history.get("1.0", "end").strip()),
             "moment": dict(
                 {key: bool(var.get()) for key, (var, _) in
                  self.moment_flags.items()},
                 path=self.moment_path.get().strip()
-                if self.moment_mode.get() == MOMENT_OWN else ""),
+                if self.moment_mode.get() == MOMENT_OWN else "",
+                ink_slant=int(self.ink_slant.get()),
+                ink_rotation=int(self.ink_rotation.get()),
+                **{key: int(place[0].get())
+                   for key, place in self.ink_place.items()}),
         })
         if self.moment_mode.get() == MOMENT_OWN and \
                 not spec["moment"]["path"]:
