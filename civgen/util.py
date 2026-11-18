@@ -63,10 +63,11 @@ def is_number(value):
         return False
 
 
-def safe_folder_name(name):
-    """Filesystem-safe folder name for a mod pack."""
+def safe_folder_name(name, fallback="AltLeaderPack"):
+    """Filesystem-safe folder name for a mod pack (fallback: for a name
+    without any letters or digits)."""
     base = re.sub(r"[^0-9A-Za-z]+", "_", name or "").strip("_")
-    return base or "AltLeaderPack"
+    return base or fallback
 
 
 # ---------------------------------------------------------------------------

@@ -32,7 +32,7 @@ from ..references import (prefix_change, retarget,
                           repair as repair_references)
 from ..project import (LEGACY_EXT, PROJECT_EXT, json_ready, load_project,
                        project_path_for, save_project, export_leaders,
-                       import_leaders)
+                       import_leaders, package_project)
 from . import theme
 from .widgets import install_icon_context_menu
 from .widgets import BusyDialog, Tooltip, add_tooltip
@@ -248,6 +248,10 @@ class GeneratorApp(tk.Tk):
                              "Save the project (Ctrl+S)")
         tool("Save as...", self.on_save_project_as,
              "Save the project under another name (Ctrl+Shift+S)")
+        tool("Package...", self.on_package_project,
+             "Save a copy of the project with every image (and custom "
+             "file) it uses in one zip, to back it up or move it to "
+             "another machine")
         separator()
         tool("Load game data...", self.on_load_cache,
              "Read civilizations, leaders, units, buildings... from the "
@@ -967,11 +971,15 @@ class GeneratorApp(tk.Tk):
             except Exception:           # no Pillow / unreadable image
                 spec["icon_crop"] = None
 
-    def on_save_project(self):
+    def _sync_project(self):
+        """Put the main window's fields into the project, for saving."""
         self.project["mod_name"] = self.mod_name_var.get().strip() \
             or "unnamed_mod"
         self.project["prefix"] = self.type_prefix()
         self.project["output_dir"] = self.out_var.get().strip()
+
+    def on_save_project(self):
+        self._sync_project()
         path = self.project_path
         if not path:
             name = self.project["mod_name"]
@@ -1002,6 +1010,33 @@ class GeneratorApp(tk.Tk):
         if not self.project_path:       # cancelled
             self.project_path = old
             self._update_save_button()
+
+    def on_package_project(self):
+        """Write the project with a copy of every file it uses to a zip
+        (see project.package_project). The project here is not changed
+        and keeps its own file."""
+        self._sync_project()
+        path = filedialog.asksaveasfilename(
+            title="Package project",
+            initialfile=safe_folder_name(self.project["mod_name"]) + ".zip",
+            defaultextension=".zip", filetypes=[("Zip archive", "*.zip")])
+        if not path:
+            return
+        try:
+            missing = package_project(self.project, path)
+        except (OSError, TypeError, ValueError) as exc:
+            messagebox.showerror("Could not package project", str(exc))
+            return
+        message = ("Packaged the project to:\n{}\n\nUnpack it anywhere and "
+                   "open {} - its images are in the folder next to it."
+                   .format(path, os.path.splitext(os.path.basename(path))[0]
+                           + PROJECT_EXT))
+        if missing:
+            message += ("\n\n{} file(s) were not found and are not "
+                        "included:\n{}".format(len(missing),
+                                               "\n".join(missing[:10])) +
+                        ("\n..." if len(missing) > 10 else ""))
+        messagebox.showinfo("Project packaged", message)
 
     # -- misc ---------------------------------------------------------------------
 

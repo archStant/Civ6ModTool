@@ -17,6 +17,7 @@ import tempfile
 import unittest
 import uuid
 import xml.etree.ElementTree as ET
+import zipfile
 import zlib
 
 from civgen import (agendas, artdefs, civs, landmarks, leaders, modbuild,
@@ -2246,6 +2247,71 @@ class ProjectFileTest(unittest.TestCase):
         self.assertIsInstance(loaded["leaders"][0]["primary"], tuple)
         self.assertFalse(os.path.exists(path + ".tmp"))
         self.assertEqual(project.project_path_for(path), path)
+
+    def test_package(self):
+        def image(name):
+            path = os.path.join(self.tmp, "src", name)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "wb") as fh:
+                fh.write(name.encode())
+            return path
+        jeanne = self.project["leaders"][0]
+        portrait = image("Jeanne.png")
+        jeanne.update(load_fg_path=portrait, mood_images={
+            "HAPPY": image("smile.jpg"), "UNHAPPY": ""})
+        jeanne["uniques"][0]["icon_path"] = image("guard.png")
+        twin = dict(jeanne, uniques=[], mood_images={},
+                    load_fg_path=image("other.png"))     # the same name
+        self.project["leaders"].append(twin)
+        civ = self.project["civs"][0]
+        civ["icon_path"] = portrait                      # packed once
+        civ["moment_illustrations"] = [{"item": "UNIT_X",
+                                        "path": image("moment.png")}]
+        self.project["workshop"]["preview_path"] = image("preview.png")
+        rules = image("Rules.sql")
+        self.project["extra_files"].append(modbuild.new_custom_file(rules))
+        before = project.json_ready(self.project)
+
+        zip_path = os.path.join(self.tmp, "Amazons pack.zip")
+        missing = project.package_project(self.project, zip_path)
+        self.assertEqual(missing, ["C:/mine/Rules.sql"])
+        self.assertEqual(project.json_ready(self.project), before)
+        with zipfile.ZipFile(zip_path) as zf:
+            self.assertEqual(sorted(zf.namelist()), [
+                "Amazons pack.civmod",
+                "custom_files/Rules.sql",
+                "images/civilizations/Amazons/moments/UNIT_X.png",
+                "images/leaders/Jeanne/mood_happy.jpg",
+                "images/leaders/Jeanne/portrait.png",
+                "images/leaders/Jeanne/uniques/Pucelle_Guard/icon.png",
+                "images/leaders/Jeanne_2/portrait.png",
+                "images/workshop/preview.png"])
+            saved = json.loads(zf.read("Amazons pack.civmod"))
+            self.assertEqual(saved["civs"][0]["icon_path"],
+                             "images/leaders/Jeanne/portrait.png")
+            out = os.path.join(self.tmp, "unpacked")
+            zf.extractall(out)
+
+        shutil.rmtree(os.path.join(self.tmp, "src"))   # another machine
+        loaded, _ = project.load_project(
+            os.path.join(out, "Amazons pack.civmod"))
+        jeanne = loaded["leaders"][0]
+        for path, name in (
+                (jeanne["load_fg_path"], "Jeanne.png"),
+                (jeanne["mood_images"]["HAPPY"], "smile.jpg"),
+                (jeanne["uniques"][0]["icon_path"], "guard.png"),
+                (loaded["leaders"][-1]["load_fg_path"], "other.png"),
+                (loaded["civs"][0]["icon_path"], "Jeanne.png"),
+                (loaded["civs"][0]["moment_illustrations"][0]["path"],
+                 "moment.png"),
+                (loaded["workshop"]["preview_path"], "preview.png"),
+                (loaded["extra_files"][1]["path"], "Rules.sql")):
+            self.assertTrue(os.path.isabs(path), path)
+            with open(path, "rb") as fh:
+                self.assertEqual(fh.read(), name.encode())
+        self.assertEqual(jeanne["mood_images"]["UNHAPPY"], "")
+        self.assertEqual(loaded["extra_files"][0]["path"],
+                         "C:/mine/Rules.sql")           # not found: as was
 
     def test_older_pickled_project(self):
         import pickle
