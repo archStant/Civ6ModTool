@@ -23,6 +23,7 @@ import zlib
 from civgen import (agendas, art, artdefs, civs, landmarks, leaders,
                     modbuild, modifiers, moments, moods, project, religions,
                     unit_art, unit_models, uniques)
+from civgen import gamedata
 from civgen.gamedata import GameData
 from civgen.util import find_game_cache, find_game_dir
 
@@ -1234,6 +1235,80 @@ class PrereqTest(unittest.TestCase):
         spec["stats"] = {"PrereqTech": "CIVIC_X"}
         with self.assertRaises(ValueError):
             uniques.normalize_unique(spec, civ, NoData())
+
+
+class ColorClashTest(unittest.TestCase):
+    """The leader editor's warning about colors that look like the
+    barbarians' or a city-state type's."""
+
+    RESERVED = gamedata.DEFAULT_RESERVED_COLORS
+
+    def clashes(self, primary, secondary):
+        return gamedata.color_clashes(primary, secondary, self.RESERVED)
+
+    def test_clashes(self):
+        self.assertEqual(self.clashes((200, 25, 20), (20, 20, 20)),
+                         ["Barbarians"])
+        self.assertEqual(self.clashes((30, 30, 30), (250, 250, 250)),
+                         ["Religious city states"])
+        # swapped colors look different (Peter the Great)
+        self.assertEqual(self.clashes((247, 216, 1), (24, 24, 24)), [])
+        self.assertEqual(self.clashes((30, 90, 170), (230, 230, 230)), [])
+        # the closest base game leader: Cleopatra
+        self.assertEqual(self.clashes((1, 79, 81), (234, 225, 157)), [])
+
+    def test_reserved_colors_from_game_files(self):
+        xml = """<GameInfo>
+          <Colors>
+            <Row Type="COLOR_GREEN" Color="0,200,0,255"/>
+            <Row><Type>COLOR_PLAYER_CITY_STATE_PRIMARY</Type>
+                 <Color>0.1,0.1,0.1,1</Color></Row>
+            <Row><Type>COLOR_PLAYER_CITY_STATE_TRADE_SECONDARY</Type>
+                 <Color>COLOR_GREEN</Color></Row>
+            <Row><Type>COLOR_PLAYER_CITY_STATE_MARITIME_SECONDARY</Type>
+                 <Color>0,0,255,255</Color></Row>
+          </Colors>
+          <PlayerColors>
+            <Row><Type>CIVILIZATION_BARBARIAN</Type>
+                 <PrimaryColor>COLOR_GREEN</PrimaryColor>
+                 <SecondaryColor>0,0,0,255</SecondaryColor></Row>
+            <Row><Type>LEADER_X</Type>
+                 <PrimaryColor>COLOR_GREEN</PrimaryColor>
+                 <SecondaryColor>1,2,3,255</SecondaryColor></Row>
+          </PlayerColors>
+        </GameInfo>"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "Colors.xml")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(xml)
+            tables = gamedata.read_color_tables([path])
+        self.assertEqual(gamedata.leader_colors_from(*tables),
+                         {"LEADER_X": ((0, 200, 0), (1, 2, 3))})
+        reserved = gamedata.reserved_colors_from(*tables)
+        self.assertEqual(reserved["Barbarians"], ((0, 200, 0), (0, 0, 0)))
+        self.assertEqual(reserved["Trade city states"],
+                         ((26, 26, 26), (0, 200, 0)))
+        self.assertEqual(reserved["Maritime city states"],
+                         ((26, 26, 26), (0, 0, 255)))
+        # not in the files: the base game's
+        self.assertEqual(reserved["Religious city states"],
+                         self.RESERVED["Religious city states"])
+        self.assertEqual(gamedata.reserved_colors_from({}, {}),
+                         self.RESERVED)
+
+    def test_base_game_leaders_do_not_clash(self):
+        game_dir = find_game_dir()
+        if not game_dir:
+            self.skipTest("game install not found")
+        tables = gamedata.read_color_tables(   # (not workshop / local mods)
+            f for f in gamedata.color_xml_files(game_dir)
+            if os.path.abspath(f).startswith(os.path.abspath(game_dir)))
+        reserved = gamedata.reserved_colors_from(*tables)
+        for leader, (p, s) in gamedata.leader_colors_from(*tables).items():
+            if leader == "LEADER_FREE_CITIES":
+                continue    # not a playable leader
+            self.assertEqual(gamedata.color_clashes(p, s, reserved), [],
+                             leader)
 
 
 class StrategicResourceTest(unittest.TestCase):

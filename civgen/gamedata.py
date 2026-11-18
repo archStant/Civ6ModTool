@@ -253,9 +253,11 @@ def parse_color(value, colors, depth=0):
     return tuple(max(0, min(255, int(round(p)))) for p in parts)
 
 
-def load_leader_colors(files):
-    """{LeaderType: (primary rgb, secondary rgb)} from Colors /
-    PlayerColors rows (<Row> or <Replace>, as elements or attributes)."""
+def read_color_tables(files):
+    """(colors, players) from the Colors / PlayerColors rows (<Row> or
+    <Replace>, as elements or attributes) of the files, later files
+    overriding earlier ones: colors is {ColorType: value as written},
+    players {Type: (PrimaryColor, SecondaryColor) as written}."""
     colors, players = {}, {}
     for path in files:
         try:
@@ -279,16 +281,116 @@ def load_leader_colors(files):
                     continue
                 if table.tag == "Colors" and fields.get("Color"):
                     colors[kind] = fields["Color"]
-                elif table.tag == "PlayerColors" and kind.startswith(
-                        "LEADER_"):
+                elif table.tag == "PlayerColors":
                     players[kind] = (fields.get("PrimaryColor"),
                                      fields.get("SecondaryColor"))
+    return colors, players
+
+
+def leader_colors_from(colors, players):
+    """{LeaderType: (primary rgb, secondary rgb)} from read_color_tables'
+    result."""
     out = {}
     for leader, (primary, secondary) in players.items():
+        if not leader.startswith("LEADER_"):
+            continue
         p, s = parse_color(primary, colors), parse_color(secondary, colors)
         if p and s:
             out[leader] = (p, s)
     return out
+
+
+def load_leader_colors(files):
+    """{LeaderType: (primary rgb, secondary rgb)} from Colors /
+    PlayerColors rows (<Row> or <Replace>, as elements or attributes)."""
+    return leader_colors_from(*read_color_tables(files))
+
+
+# Players a leader's colors should not look like: label -> (primary rgb,
+# secondary rgb), the base game's values (used when the game files are not
+# found)
+_CITY_STATE_PRIMARY = (24, 24, 24)
+DEFAULT_RESERVED_COLORS = {
+    "Barbarians": ((202, 20, 21), (24, 24, 24)),
+    "Science city states": (_CITY_STATE_PRIMARY, (116, 163, 243)),
+    "Trade city states": (_CITY_STATE_PRIMARY, (247, 216, 1)),
+    "Industrial city states": (_CITY_STATE_PRIMARY, (255, 129, 18)),
+    "Cultural city states": (_CITY_STATE_PRIMARY, (255, 0, 255)),
+    "Religious city states": (_CITY_STATE_PRIMARY, (249, 249, 249)),
+    "Militaristic city states": (_CITY_STATE_PRIMARY, (202, 20, 21)),
+}
+CITY_STATE_COLOR = "COLOR_PLAYER_CITY_STATE_"
+
+
+def reserved_colors_from(colors, players):
+    """DEFAULT_RESERVED_COLORS with the values of read_color_tables'
+    result: the barbarians' player colors, and each city-state type's
+    COLOR_PLAYER_CITY_STATE_<TYPE>_SECONDARY on the city states' primary
+    (so a mod recoloring them, or adding a type, is followed)."""
+    out = dict(DEFAULT_RESERVED_COLORS)
+    barbarian = players.get("CIVILIZATION_BARBARIAN")
+    if barbarian:
+        p, s = (parse_color(barbarian[0], colors),
+                parse_color(barbarian[1], colors))
+        if p and s:
+            out["Barbarians"] = (p, s)
+    primary = (parse_color(CITY_STATE_COLOR + "PRIMARY", colors)
+               or _CITY_STATE_PRIMARY)
+    for name in colors:
+        if not (name.startswith(CITY_STATE_COLOR)
+                and name.endswith("_SECONDARY")):
+            continue
+        kind = name[len(CITY_STATE_COLOR):-len("_SECONDARY")]
+        secondary = parse_color(name, colors)
+        if kind and secondary:
+            out["{} city states".format(
+                kind.replace("_", " ").capitalize())] = (primary, secondary)
+    return out
+
+
+# Leader colors closer than this to a reserved pair get a warning: the
+# larger of the primary's and the secondary's CIE76 distance. 30 flags
+# near-identical pairs only; no base game leader is that close (the
+# closest, Cleopatra to the religious city states, is 36).
+COLOR_CLASH_THRESHOLD = 30
+
+
+def rgb_to_lab(rgb):
+    """sRGB (0-255) -> CIE L*a*b* (D65)."""
+    def linear(c):
+        c /= 255.0
+        return ((c + 0.055) / 1.055) ** 2.4 if c > 0.04045 else c / 12.92
+    r, g, b = (linear(c) for c in rgb)
+    x = (0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047
+    y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    z = (0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883
+
+    def f(t):
+        return t ** (1 / 3.0) if t > 0.008856 else 7.787 * t + 16 / 116.0
+    fx, fy, fz = f(x), f(y), f(z)
+    return 116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)
+
+
+def color_distance(a, b):
+    """CIE76 distance of two rgb colors (about 2.3 is just noticeable)."""
+    la, lb = rgb_to_lab(a), rgb_to_lab(b)
+    return sum((p - q) ** 2 for p, q in zip(la, lb)) ** 0.5
+
+
+def color_clashes(primary, secondary, reserved,
+                  threshold=COLOR_CLASH_THRESHOLD):
+    """Labels of the reserved {label: (primary, secondary)} pairs the
+    colors are too close to, closest first. Primary is compared with
+    primary and secondary with secondary only: swapped colors look
+    different on the map (Peter the Great is a trade city state's
+    colors swapped)."""
+    scores = []
+    for label, (p, s) in reserved.items():
+        score = max(color_distance(primary, p),
+                    color_distance(secondary, s))
+        if score < threshold:
+            scores.append((score, label))
+    return [label for _, label in sorted(scores)]
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +410,8 @@ class GameData:
         self.agendas = {}       # AgendaType -> {"name", "desc", "leaders"}
         self.leader_agenda = {}  # LeaderType -> historical AgendaType
         self.leader_colors = {}  # LeaderType -> (primary rgb, secondary rgb)
+        # label -> (primary rgb, secondary rgb) of barbarians / city states
+        self.reserved_colors = dict(DEFAULT_RESERVED_COLORS)
         # LeaderType -> [{"type", "name", "desc", "name_tag", "desc_tag"}]
         self.leader_abilities = {}
         # CivilizationType -> abilities, like leader_abilities
@@ -447,8 +551,9 @@ class GameData:
 
         # the cache's Colors / PlayerColors tables are empty: colors are
         # loaded by UpdateColors actions straight from the XML files
-        self.leader_colors = load_leader_colors(
-            color_xml_files(find_game_dir()))
+        tables = read_color_tables(color_xml_files(find_game_dir()))
+        self.leader_colors = leader_colors_from(*tables)
+        self.reserved_colors = reserved_colors_from(*tables)
 
         self.agendas = {}
         self.leader_agenda = {}
@@ -1005,6 +1110,11 @@ class GameData:
     def colors(self, leader_type):
         """(primary rgb, secondary rgb) of a leader, or None."""
         return self.leader_colors.get(leader_type)
+
+    def color_clashes(self, primary, secondary):
+        """Labels of the barbarians / city-state types whose colors look
+        like these (see color_clashes), closest first."""
+        return color_clashes(primary, secondary, self.reserved_colors)
 
 
 # Tables of rules a trait sets besides its modifiers: {table: the other

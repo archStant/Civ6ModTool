@@ -217,6 +217,12 @@ class LeaderEditor(tk.Toplevel):
         ttk.Button(body, text="Pick...",
                    command=lambda: self.pick_color("secondary")).grid(
             row=row, column=2, sticky="w", **pad)
+        row += 1
+        # (empty unless the colors look like barbarians' or city states')
+        self.color_warning = ttk.Label(body, text="", foreground="#c05000",
+                                       wraplength=420, justify="left")
+        self.color_warning.grid(row=row, column=1, columnspan=2, sticky="w",
+                                **pad)
         self._refresh_swatches()
         row += 1
 
@@ -1418,6 +1424,12 @@ class LeaderEditor(tk.Toplevel):
                 text="({},{},{})".format(r, g, b),
                 background="#%02x%02x%02x" % (r, g, b),
                 foreground="black" if light else "white")
+        clashes = self.app.data.color_clashes(self.primary, self.secondary)
+        self.color_warning.config(text=(
+            "These colors look like those of the {}: they may be hard to "
+            "tell apart on the map.".format(" and the ".join(
+                c[0].lower() + c[1:] for c in clashes))
+            if clashes else ""))
 
     def browse_image(self, var, title):
         path = filedialog.askopenfilename(
