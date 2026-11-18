@@ -727,7 +727,7 @@ def fitted_portrait(path):
 
 
 def preview_image(path, box, mask_path=None, portrait=False, hue=0,
-                  backdrop=PREVIEW_BACKDROP):
+                  backdrop=PREVIEW_BACKDROP, overlay=None):
     """The image at path fitted into box (w, h) and centred on a backdrop
     (RGBA) of that size, dark by default so transparency shows. With
     mask_path the image is faded out with that mask first (cropped to the
@@ -735,18 +735,24 @@ def preview_image(path, box, mask_path=None, portrait=False, hue=0,
     like a loading
     portrait (fit_portrait). Returns an RGBA image or None if path is not
     a file. hue: turn the colors by that many degrees (see shift_hue).
-    Raises ImportError without Pillow."""
+    overlay: an image laid over it, stretched to its size (masked too),
+    like a diplomacy foreground over its background; ignored if not a
+    file. Raises ImportError without Pillow."""
     from PIL import Image
     if not path or not os.path.isfile(path):
         return None
+    if not overlay or not os.path.isfile(overlay):
+        overlay = None
 
     def make():
         if mask_path:
             mw, mh = Image.open(mask_path).size
             scale = min(box[0] / float(mw), box[1] / float(mh))
-            img = apply_image_mask(path, mask_path,
-                                   size=(max(1, int(mw * scale)),
-                                         max(1, int(mh * scale))))
+            size = (max(1, int(mw * scale)), max(1, int(mh * scale)))
+            img = apply_image_mask(path, mask_path, size=size)
+            if overlay:
+                img.alpha_composite(apply_image_mask(overlay, mask_path,
+                                                     size=size))
         elif portrait:
             img = fitted_portrait(path).copy()
             img.thumbnail(box, Image.LANCZOS)
@@ -755,14 +761,20 @@ def preview_image(path, box, mask_path=None, portrait=False, hue=0,
             img.draft("RGB", box)       # fast JPEG downscale on load
             img = img.convert("RGBA")
             img.thumbnail(box, Image.LANCZOS)
+            if overlay:
+                # the game stretches both layers to the screen
+                img.alpha_composite(Image.open(overlay).convert("RGBA")
+                                    .resize(img.size, Image.LANCZOS))
         if hue:
             img = shift_hue(img, hue)
         out = Image.new("RGBA", tuple(box), backdrop)
         out.alpha_composite(img, ((box[0] - img.width) // 2,
                                   (box[1] - img.height) // 2))
         return out
+    over = (os.path.abspath(overlay), os.path.getmtime(overlay)) \
+        if overlay else None
     return _cached(("preview", tuple(box), mask_path, portrait, hue,
-                    tuple(backdrop)), path, make)
+                    tuple(backdrop), over), path, make)
 
 
 def placeholder_icon(name, primary, secondary, size):

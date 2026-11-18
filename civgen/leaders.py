@@ -69,6 +69,8 @@ def leader_custom_marks(spec):
 #   bio, quote, texts ({tag template: text}, see
 #   DIPLO_TEXT / PEDIA_TEXT), primary, secondary,
 #   icon_path, load_fg_path, load_bg_path, diplo_bg_path,
+#   diplo_fg_path (laid over diplo_bg_path as a two-layer scene, like the
+#   game's own: the background slides in behind it; needs diplo_bg_path),
 #   load_bg_default (no load_bg_path: use assets/bg_loading_default.png),
 #   load_bg_hue (turn the loading background's colors by that many
 #   degrees, -180..180),
@@ -109,7 +111,7 @@ def new_leader_spec():
         "primary": (30, 90, 170), "secondary": (230, 230, 230),
         "icon_path": "", "load_fg_path": "", "load_bg_path": "",
         "load_bg_default": False, "load_bg_hue": 0,
-        "diplo_bg_path": "", "diplo_bg_mask": False,
+        "diplo_bg_path": "", "diplo_fg_path": "", "diplo_bg_mask": False,
         "icon_mode": "portrait", "icon_crop": None,
         "icon_border_color": DEFAULT_ICON_BORDER_COLOR,
         "icon_border_width": DEFAULT_ICON_BORDER_WIDTH,
@@ -192,7 +194,8 @@ def normalize_spec(spec, data, prefix="", civs=None):
     for key, label in (("icon_path", "icon"),
                        ("load_fg_path", "loading portrait"),
                        ("load_bg_path", "loading background"),
-                       ("diplo_bg_path", "diplomacy background")):
+                       ("diplo_bg_path", "diplomacy background"),
+                       ("diplo_fg_path", "diplomacy foreground")):
         path = (spec.get(key) or "").strip()
         if key == "icon_path" and icon_mode != "file":
             path = ""                   # the icon comes from the portrait
@@ -200,6 +203,15 @@ def normalize_spec(spec, data, prefix="", civs=None):
             raise ValueError("{}: {} image not found: {}".format(
                 name, label, path))
         images[key] = path
+    if images["diplo_fg_path"] and not images["diplo_bg_path"]:
+        raise ValueError("{}: the diplomacy foreground needs a diplomacy "
+                         "background too.".format(name))
+    # with a foreground the diplomacy screen shows a layered scene, whose
+    # textures LeaderScene.lua names after the leader type without
+    # "LEADER_" (like the game's CLEOPATRA_1..4); the last one is on top
+    scene_prefix = slug.replace("LEADER_", "")
+    layered = bool(images["diplo_fg_path"])
+    diplo_bg_name = scene_prefix + "_1" if layered else slug + "_DIPLO_BG"
     # diplomacy-screen images by mood (the portrait is the neutral one)
     mood_paths = {}
     for key, path in (spec.get("mood_images") or {}).items():
@@ -422,10 +434,15 @@ def normalize_spec(spec, data, prefix="", civs=None):
         # ... and the ones it changes to by mood: [(slot, path, texture)]
         # (a texture may be shared, also with the portrait's)
         "mood_images": mood_images,
-        # diplomacy-screen background (DiplomacyInfo.BackgroundImage)
+        # diplomacy-screen background (DiplomacyInfo.BackgroundImage, or
+        # the bottom layer of a scene with diplo_fg)
         "diplo_bg_path": images["diplo_bg_path"],
-        "diplo_bg_name": slug + "_DIPLO_BG",
-        "diplo_bg": slug + "_DIPLO_BG" if images["diplo_bg_path"] else None,
+        "diplo_bg_name": diplo_bg_name,
+        "diplo_bg": diplo_bg_name if images["diplo_bg_path"] else None,
+        # ... and the still top layer over it (None: a single image)
+        "diplo_fg_path": images["diplo_fg_path"],
+        "diplo_fg_name": scene_prefix + "_2",
+        "diplo_fg": scene_prefix + "_2" if layered else None,
         "diplo_bg_mask": bool(spec.get("diplo_bg_mask")),
         # no own background: show the original's layered scene (set by
         # _write_mod once it knows the art and LeaderScene.lua worked)
@@ -903,6 +920,11 @@ VALUES
 """.format(rows=rows)
 
 
+# Leaders.SceneLayers of a leader with a diplomacy foreground: its
+# background (<NAME>_1, slides in) and foreground (<NAME>_2, stays still)
+SCENE_LAYERS = 2
+
+
 def scene_block(c):
     """AltLeaderScenes row: show the layered diplomacy scene of the
     original leader or the chosen scene leader (or, for a generated one,
@@ -932,7 +954,7 @@ VALUES ('{slug}', 'KIND_LEADER');
 -- itself would make the UI list its ability twice: GetLeaderUniqueTraits
 -- adds the InheritFrom leader's traits on top of our LeaderTraits copy.
 INSERT INTO Leaders (LeaderType, Name, InheritFrom, Sex, SceneLayers)
-SELECT '{slug}', '{name_tag}', InheritFrom, {sex}, SceneLayers
+SELECT '{slug}', '{name_tag}', InheritFrom, {sex}, {scene_layers}
 FROM Leaders WHERE LeaderType = '{orig}';
 
 {capital}{city_names}
@@ -946,9 +968,9 @@ FROM LoadingInfo WHERE LeaderType = '{orig}';
 INSERT INTO LeaderQuotes (LeaderType, Quote)
 VALUES ('{slug}', '{quote_tag}');
 
--- Diplomacy-screen background. Without a DiplomacyInfo row LeaderScene.lua
--- looks for layered textures named after the leader type, which a
--- generated leader does not have.
+-- Diplomacy-screen background. Without a BackgroundImage LeaderScene.lua
+-- shows the SceneLayers textures named after the leader type, which a
+-- generated leader only has with a diplomacy foreground.
 INSERT INTO DiplomacyInfo (Type, BackgroundImage)
 SELECT '{slug}', {diplo_bg}{diplo_from};
 {scene}""".format(name=c["name"], slug=c["slug"], name_tag=c["name_tag"],
@@ -957,7 +979,9 @@ SELECT '{slug}', {diplo_bg}{diplo_from};
            capital=capital_block(c),
            scene=scene_block(c),
            city_names=city_names_block(c),
-           diplo_bg=value_or_column(c["diplo_bg"], "BackgroundImage"),
+           scene_layers=SCENE_LAYERS if c["diplo_fg"] else "SceneLayers",
+           diplo_bg="NULL" if c["diplo_fg"] else
+           value_or_column(c["diplo_bg"], "BackgroundImage"),
            diplo_from="" if c["diplo_bg"] else
            "\nFROM DiplomacyInfo WHERE Type = '{}'".format(c["orig"]),
            orig=c["orig"], sex=sql_str(c["sex"]),
@@ -977,7 +1001,7 @@ VALUES ('{slug}', 'KIND_LEADER');
 -- InheritFrom LEADER_DEFAULT, like every leader: it gives the traits all
 -- major civilizations share
 INSERT INTO Leaders (LeaderType, Name, InheritFrom, Sex, SceneLayers)
-VALUES ('{slug}', '{name_tag}', 'LEADER_DEFAULT', {sex}, 0);
+VALUES ('{slug}', '{name_tag}', 'LEADER_DEFAULT', {sex}, {scene_layers});
 
 {capital}{city_names}
 {ability}
@@ -990,8 +1014,9 @@ VALUES ('{slug}', {load_fg}, {load_bg}, 0, '{bio_tag}');
 INSERT INTO LeaderQuotes (LeaderType, Quote)
 VALUES ('{slug}', '{quote_tag}');
 
--- Diplomacy-screen background (none: the game's default scene, or the
--- chosen leader's scene below)
+-- Diplomacy-screen background (none: the SceneLayers textures with a
+-- diplomacy foreground, else the game's default scene, or the chosen
+-- leader's scene below)
 INSERT INTO DiplomacyInfo (Type, BackgroundImage)
 VALUES ('{slug}', {diplo_bg});
 {scene}""".format(name=c["name"], slug=c["slug"], name_tag=c["name_tag"],
@@ -1002,7 +1027,9 @@ VALUES ('{slug}', {diplo_bg});
            bio_tag=c["bio_tag"], quote_tag=c["quote_tag"],
            load_fg=value_or_null(c["load_fg"]),
            load_bg=value_or_null(c["load_bg"]),
-           diplo_bg=value_or_null(c["diplo_bg"]))
+           scene_layers=SCENE_LAYERS if c["diplo_fg"] else 0,
+           diplo_bg="NULL" if c["diplo_fg"] else
+           value_or_null(c["diplo_bg"]))
 
 
 def text_rows(c):

@@ -211,9 +211,11 @@ ICONS_SQL_ACTION = ("\n    <UpdateIcons id=\"{scope}Icons\">\n"
 
 # Diplomacy-screen backgrounds. LeaderScene.lua shows DiplomacyInfo's single
 # image if the leader has one, else the layered scene textures named after
-# the leader type (VICTORIA_1..SceneLayers). Base-game leaders have no
-# DiplomacyInfo row, and a generated leader has no layers under its own
-# name, so the mod ships a copy of the game's LeaderScene.lua that shows
+# the leader type (VICTORIA_1..SceneLayers; the last is the still top
+# layer, the others slide in beneath it). A generated leader with a
+# diplomacy foreground gets two such layers of its own. Base-game leaders
+# have no DiplomacyInfo row, and a generated leader without a background
+# has no layers under its own name, so the mod ships a copy of the game's LeaderScene.lua that shows
 # the scene of the leader named in AltLeaderScenes instead. All generated
 # packs share the table and the patch, so whichever copy wins works for
 # every pack.
@@ -1156,7 +1158,7 @@ def build_art(ctxs, folder, mod_dir, report, cooker,
 
     def inherit_art(c):
         c["leader_icon"] = c["icon_inherit"]
-        c["load_fg"] = c["load_bg"] = c["diplo_bg"] = None
+        c["load_fg"] = c["load_bg"] = c["diplo_bg"] = c["diplo_fg"] = None
         c["mood_images"] = []
         c["moments"] = []           # no rows pointing at missing art
 
@@ -1362,26 +1364,30 @@ def build_art(ctxs, folder, mod_dir, report, cooker,
                     convert(c["load_bg_name"], bg_src, make=make, key=key)
                     names.append(c["load_bg_name"])
                 if c["diplo_bg"]:
-                    diplo_src, make, key = c["diplo_bg_path"], None, None
                     mask = asset_path(DIPLO_BG_MASK)
                     if c["diplo_bg_mask"] and not mask:
                         report.append(
                             "WARNING: {} - assets/{} not found; the "
                             "diplomacy background is not masked".format(
                                 c["name"], DIPLO_BG_MASK))
-                    elif c["diplo_bg_mask"]:
-                        diplo_src = os.path.join(
-                            pantry, c["diplo_bg_name"] + "_masked.png")
+                    # a foreground fades out with the background beneath
+                    layers = [(c["diplo_bg_name"], c["diplo_bg_path"])]
+                    if c["diplo_fg"]:
+                        layers.append((c["diplo_fg_name"],
+                                       c["diplo_fg_path"]))
+                    for name, path in layers:
+                        diplo_src, make, key = path, None, None
+                        if c["diplo_bg_mask"] and mask:
+                            diplo_src = os.path.join(pantry,
+                                                     name + "_masked.png")
 
-                        def make(c=c, diplo_src=diplo_src, mask=mask):
-                            apply_image_mask(c["diplo_bg_path"],
-                                             mask).save(diplo_src)
-                            report.append("masked " + c["diplo_bg_name"])
-                        key = ("mask", file_sig(c["diplo_bg_path"]),
-                               file_sig(mask))
-                    convert(c["diplo_bg_name"], diplo_src, make=make,
-                            key=key)
-                    names.append(c["diplo_bg_name"])
+                            def make(name=name, path=path,
+                                     diplo_src=diplo_src, mask=mask):
+                                apply_image_mask(path, mask).save(diplo_src)
+                                report.append("masked " + name)
+                            key = ("mask", file_sig(path), file_sig(mask))
+                        convert(name, diplo_src, make=make, key=key)
+                        names.append(name)
                 for m in c["moments"]:
                     convert_moment(c, m)
                     names.append(m["texture"])
