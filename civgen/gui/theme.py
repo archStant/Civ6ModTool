@@ -133,6 +133,18 @@ def preferred_ui_scale():
     return min(max(value, UI_SCALES[0]), UI_SCALES[-1])
 
 
+ART_CACHE_GB_RANGE = (1, 200)
+
+
+def art_cache_gb():
+    """The remembered art cache limit in GB, or None (the default)."""
+    try:
+        value = int(load_settings()["art_cache_gb"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return min(max(value, ART_CACHE_GB_RANGE[0]), ART_CACHE_GB_RANGE[1])
+
+
 def ui_scale():
     """The UI scale in use, in percent."""
     return _state["ui_scale"]

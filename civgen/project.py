@@ -84,6 +84,11 @@ def load_project(path):
             isinstance(c, dict) and "name" in c for c in project["civs"]):
         raise ValueError("The project contains a malformed civilization "
                          "entry.")
+    project.setdefault("religions", [])     # projects before religions
+    if not isinstance(project["religions"], list) or not all(
+            isinstance(r, dict) and "name" in r
+            for r in project["religions"]):
+        raise ValueError("The project contains a malformed religion entry.")
     # files of the user's own added to the mod (see
     # modbuild.check_extra_files)
     project.setdefault("extra_files", [])
@@ -92,7 +97,8 @@ def load_project(path):
             for f in project["extra_files"]):
         raise ValueError("The project contains a malformed custom file "
                          "entry.")
-    for spec in project["leaders"]:     # JSON turned the tuples into lists
+    # JSON turned the tuples into lists
+    for spec in project["leaders"] + project["religions"]:
         for key in TUPLE_KEYS:
             if isinstance(spec.get(key), list):
                 spec[key] = tuple(spec[key])
@@ -125,7 +131,8 @@ LEADERS_MAGIC = "civ6-alt-leader-generator-leaders"
 LEADERS_ENTRY = "leaders.json"
 IMAGE_KEYS = ("icon_path", "load_fg_path", "load_bg_path", "diplo_bg_path",
               "diplo_fg_path")
-TUPLE_KEYS = ("primary", "secondary", "icon_border_color", "icon_crop")
+TUPLE_KEYS = ("primary", "secondary", "icon_border_color", "icon_crop",
+              "color")
 # a leader's images (IMAGE_KEYS) -> their file name in a package
 IMAGE_NAMES = {"icon_path": "icon", "load_fg_path": "portrait",
                "load_bg_path": "loading_background",
@@ -134,9 +141,9 @@ IMAGE_NAMES = {"icon_path": "icon", "load_fg_path": "portrait",
 
 
 def _named_images(spec):
-    """(holder, key, name) of every image path a leader or civilization
-    spec refers to (their uniques' too); name: the image's path in a
-    package below the spec's folder, without the extension."""
+    """(holder, key, name) of every image path a leader, civilization or
+    religion spec refers to (their uniques' too); name: the image's path
+    in a package below the spec's folder, without the extension."""
     if "orig" in spec:                  # a leader
         refs = [(spec, key, IMAGE_NAMES[key]) for key in IMAGE_KEYS]
         moods = spec.get("mood_images")
@@ -155,24 +162,27 @@ def _named_images(spec):
         if isinstance(entry, dict):
             refs.append((entry, "path", "moments/" + safe_folder_name(
                 str(entry.get("item") or ""), "moment_{}".format(n))))
+    if isinstance(spec.get("moment"), dict):    # a religion's picture
+        refs.append((spec["moment"], "path", "moment"))
     return refs
 
 
 def _spec_images(spec):
-    """(holder, key) of every image path a leader or civilization spec
-    refers to (their uniques' too)."""
+    """(holder, key) of every image path a leader, civilization or
+    religion spec refers to (their uniques' too)."""
     return [(holder, key) for holder, key, _ in _named_images(spec)]
 
 
-def export_leaders(specs, path, civs=()):
-    """Write leader (and civilization) specs and their images to the zip
-    at path. Returns the image paths that were not found (exported as
-    bare paths)."""
+def export_leaders(specs, path, civs=(), religions=()):
+    """Write leader (and civilization and religion) specs and their
+    images to the zip at path. Returns the image paths that were not
+    found (exported as bare paths)."""
     images = {}                         # original path -> name in the zip
     missing = []
     civs = list(civs)
+    religions = list(religions)
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for spec in list(specs) + civs:
+        for spec in list(specs) + civs + religions:
             for holder, key in _spec_images(spec):
                 src = (holder.get(key) or "").strip()
                 if not src or src in images:
@@ -186,14 +196,15 @@ def export_leaders(specs, path, civs=()):
                 zf.write(src, images[src])
         zf.writestr(LEADERS_ENTRY, json.dumps({
             "magic": LEADERS_MAGIC, "version": PROJECT_VERSION,
-            "leaders": specs, "civs": civs, "images": images}, indent=2,
+            "leaders": specs, "civs": civs, "religions": religions,
+            "images": images}, indent=2,
             ensure_ascii=False))
     return missing
 
 
 def import_leaders(path):
     """Read an export_leaders zip. Returns (leader specs, civilization
-    specs, version). An image that
+    specs, version, religion specs). An image that
     is still at its original path is used from there; the others are
     unpacked into '<export name> images' next to the zip. Raises
     ValueError if the file is not a leader export."""
@@ -211,10 +222,15 @@ def import_leaders(path):
                 or data.get("magic") != LEADERS_MAGIC
                 or not isinstance(data.get("leaders"), list)
                 or not isinstance(data.get("images", {}), dict)
-                or not isinstance(data.get("civs", []), list)):
+                or not isinstance(data.get("civs", []), list)
+                or not isinstance(data.get("religions", []), list)):
             raise ValueError("This is not a leader export.")
         specs = data["leaders"]
         civs = data.get("civs", [])
+        religions = data.get("religions", [])
+        if not all(isinstance(r, dict) and "name" in r for r in religions):
+            raise ValueError("The export contains a malformed religion "
+                             "entry.")
         for civ in civs:
             if (not isinstance(civ, dict) or "name" not in civ
                     or not isinstance(civ.get("uniques", []), list)
@@ -237,7 +253,7 @@ def import_leaders(path):
         images = data.get("images", {})
         image_dir = os.path.splitext(path)[0] + " images"
         unpacked = {}                   # original path -> unpacked copy
-        for spec in specs + civs:
+        for spec in specs + civs + religions:
             for key in TUPLE_KEYS:      # JSON turned the tuples into lists
                 if isinstance(spec.get(key), list):
                     spec[key] = tuple(spec[key])
@@ -259,7 +275,7 @@ def import_leaders(path):
                         fh.write(zf.read(name))
                     unpacked[src] = dst
                 holder[key] = unpacked[src]
-    return specs, civs, data.get("version", 1)
+    return specs, civs, data.get("version", 1), religions
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +285,8 @@ def import_leaders(path):
 
 # A package is a zip: the project (<zip name>.civmod) and a copy of every
 # image and custom file it uses next to it, in images/leaders/<leader>/,
-# images/civilizations/<civilization>/, images/workshop/ and
+# images/civilizations/<civilization>/, images/religions/<religion>/,
+# images/workshop/ and
 # custom_files/. The project names them by paths relative to itself, which
 # load_project makes absolute again, so the unpacked folder opens anywhere.
 IMAGES_DIR = "images"
@@ -278,13 +295,15 @@ CUSTOM_FILES_DIR = "custom_files"
 
 def _project_files(project):
     """(holder, key, name) of every file path a project refers to: the
-    images of its leaders and civilizations, the Workshop preview and the
+    images of its leaders, civilizations and religions, the Workshop
+    preview and the
     custom files. name: the file's path in a package, without the
     extension (None for a custom file, which keeps its own name - the mod
     uses it)."""
     refs = []
     for group, specs in (("leaders", project.get("leaders")),
-                         ("civilizations", project.get("civs"))):
+                         ("civilizations", project.get("civs")),
+                         ("religions", project.get("religions"))):
         used = set()                    # the folders of this group
         for n, spec in enumerate(specs or [], 1):
             if not isinstance(spec, dict):
