@@ -417,6 +417,9 @@ class GameData:
         # CivilizationType -> abilities, like leader_abilities
         self.civ_abilities = {}
         self.civ_names = {}     # CivilizationType -> English name
+        # the game's city-states: [{"type", "name", "category", "traits":
+        # [{"type", "name", "desc", "name_tag", "desc_tag"}]}]
+        self.city_states = []
         self.types = {}         # TYPE_KINDS key -> [(type, English name)]
         self.favored_religions = {}     # LeaderType -> ReligionType
         # "unit" / "building" / "district" -> {type: {column: value, ...,
@@ -655,6 +658,7 @@ class GameData:
                     'SELECT {}, Name FROM "{}"{} ORDER BY {}'.format(
                         column, table, where, order))]
         self.civ_names = dict(self.types.get("civilization", []))
+        self._load_city_states()
         # the religion each of the game's leaders prefers (the AI founds
         # it when it can)
         self.favored_religions = {
@@ -672,6 +676,58 @@ class GameData:
                 "SELECT ResourceType, Name FROM Resources WHERE "
                 "ResourceClassType = 'RESOURCECLASS_STRATEGIC' "
                 "ORDER BY ResourceType")]
+
+    def _load_city_states(self):
+        """The game's city-states, their kinds and suzerain bonus traits
+        (see city_states)."""
+        found = {}
+        rows = self._query(
+            "SELECT c.CivilizationType, c.Name, p.Value, lt.TraitType, "
+            "t.Name, t.Description FROM Civilizations c "
+            "LEFT JOIN TypeProperties p ON p.Type = c.CivilizationType "
+            "AND p.Name = 'CityStateCategory' "
+            "LEFT JOIN CivilizationLeaders cl "
+            "ON cl.CivilizationType = c.CivilizationType "
+            "LEFT JOIN LeaderTraits lt ON lt.LeaderType = cl.LeaderType "
+            "LEFT JOIN Traits t ON t.TraitType = lt.TraitType "
+            "WHERE c.StartingCivilizationLevelType = "
+            "'CIVILIZATION_LEVEL_CITY_STATE' ORDER BY lt.rowid")
+        for civ, name, category, trait, name_tag, desc_tag in rows:
+            entry = found.setdefault(civ, {
+                "type": civ, "name": self._name(name, civ),
+                "category": category or "", "traits": []})
+            if trait and trait not in (t["type"] for t in entry["traits"]):
+                entry["traits"].append({
+                    "type": trait, "name": self._name(name_tag, trait),
+                    "desc": (self.loc_text(desc_tag) or
+                             self._loc(desc_tag) or "") if desc_tag else "",
+                    "name_tag": name_tag, "desc_tag": desc_tag})
+        self.city_states = sorted(found.values(), key=lambda e: e["name"])
+
+    def city_state_types(self):
+        """The game's city-states' CivilizationTypes."""
+        return {e["type"] for e in self.city_states}
+
+    def city_state_choices(self):
+        """[(CivilizationType, English name)] of the game's
+        city-states."""
+        return [(e["type"], e["name"]) for e in self.city_states]
+
+    def city_state_bonuses(self):
+        """{TraitType: {"type", "name", "desc", "name_tag", "desc_tag"}}
+        of the game's city-states' suzerain bonuses."""
+        return {t["type"]: t for e in self.city_states for t in e["traits"]}
+
+    def city_state_bonus_choices(self):
+        """[(TraitType, "City (kind): what it does")] of the game's
+        city-states' suzerain bonuses, to copy."""
+        def what(t):
+            text = " ".join(t["desc"].replace("[NEWLINE]", " ").split())
+            return (text[:77] + "...") if len(text) > 80 else \
+                text or t["name"]
+        return [(t["type"], "{} ({}): {}".format(
+            e["name"], e["category"].lower() or "?", what(t)))
+            for e in self.city_states for t in e["traits"]]
 
     def _load_items(self):
         """Every unit, building and district with all its columns, to

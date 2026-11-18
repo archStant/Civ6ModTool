@@ -89,6 +89,12 @@ def load_project(path):
             isinstance(r, dict) and "name" in r
             for r in project["religions"]):
         raise ValueError("The project contains a malformed religion entry.")
+    project.setdefault("city_states", [])   # projects before city-states
+    if not isinstance(project["city_states"], list) or not all(
+            isinstance(cs, dict) and "name" in cs
+            for cs in project["city_states"]):
+        raise ValueError("The project contains a malformed city-state "
+                         "entry.")
     # files of the user's own added to the mod (see
     # modbuild.check_extra_files)
     project.setdefault("extra_files", [])
@@ -286,7 +292,7 @@ def import_leaders(path):
 # A package is a zip: the project (<zip name>.civmod) and a copy of every
 # image and custom file it uses next to it, in images/leaders/<leader>/,
 # images/civilizations/<civilization>/, images/religions/<religion>/,
-# images/workshop/ and
+# images/city_states/<city-state>/, images/workshop/ and
 # custom_files/. The project names them by paths relative to itself, which
 # load_project makes absolute again, so the unpacked folder opens anywhere.
 IMAGES_DIR = "images"
@@ -295,15 +301,16 @@ CUSTOM_FILES_DIR = "custom_files"
 
 def _project_files(project):
     """(holder, key, name) of every file path a project refers to: the
-    images of its leaders, civilizations and religions, the Workshop
-    preview and the
+    images of its leaders, civilizations, religions and city-states, the
+    Workshop preview and the
     custom files. name: the file's path in a package, without the
     extension (None for a custom file, which keeps its own name - the mod
     uses it)."""
     refs = []
     for group, specs in (("leaders", project.get("leaders")),
                          ("civilizations", project.get("civs")),
-                         ("religions", project.get("religions"))):
+                         ("religions", project.get("religions")),
+                         ("city_states", project.get("city_states"))):
         used = set()                    # the folders of this group
         for n, spec in enumerate(specs or [], 1):
             if not isinstance(spec, dict):

@@ -292,6 +292,11 @@ Owner = namedtuple("Owner", "id table column scopes")
 OWNERS = {o.id: o for o in [
     Owner("trait", "TraitModifiers", "TraitType",
           ("player", "cities", "unit")),
+    # a city-state's suzerain bonus: a trait of the city-state whose
+    # effects are attached to its suzerain (see effects_sql), so they act
+    # as an ability of the suzerain's
+    Owner("suzerain", "TraitModifiers", "TraitType",
+          ("player", "cities", "unit")),
     Owner("building", "BuildingModifiers", "BuildingType",
           ("player", "cities", "city", "unit")),
     Owner("district", "DistrictModifiers", "DistrictType",
@@ -308,6 +313,9 @@ OWNERS = {o.id: o for o in [
 ]}
 # owner kind -> scopes its effects may have
 OWNER_SCOPES = {o.id: o.scopes for o in OWNERS.values()}
+# the game's requirement set of its suzerain bonuses: the player is the
+# city-state's suzerain (and at peace with it)
+SUZERAIN_SET = "PLAYER_IS_SUZERAIN"
 
 
 def templates_for(owner):
@@ -661,12 +669,14 @@ def effect_warnings(effect, owner, data):
                        "effects is not a unit: attach it to units instead "
                        "(e.g. MODIFIER_PLAYER_UNITS_ATTACH_MODIFIER)."
                        .format(owner))
-        elif "CITY" in info["effect"] and owner in ("trait", "improvement"):
+        elif "CITY" in info["effect"] and owner in ("trait", "suzerain",
+                                                     "improvement"):
             out.append("It changes its owner, which for a {}'s effects is "
                        "not a city: attach it to cities instead (e.g. "
                        "MODIFIER_PLAYER_CITIES_ATTACH_MODIFIER)."
-                       .format("leader or civilization ability"
-                               if owner == "trait" else owner))
+                       .format({"trait": "leader or civilization ability",
+                                "suzerain": "suzerain bonus"}.get(
+                                    owner, owner)))
     return out
 
 
@@ -967,8 +977,10 @@ def _auto_text(effect, t, name_of):
 
 def effects_sql(owner, owner_type, effects, display_name,
                 name_of=lambda kind, t: type_display_name(t)):
-    """SQL for an owner's effects. owner: "trait", "building", "district"
-    or "unit"; owner_type: its type (TRAIT_..., BUILDING_..., UNIT_...);
+    """SQL for an owner's effects. owner: "trait", "suzerain" (a
+    city-state's trait; its suzerain gets the effects), "building",
+    "district" or "unit"; owner_type: its type (TRAIT_..., BUILDING_...,
+    UNIT_...);
     display_name: the owner's English name (unit ability and combat
     preview text). Returns (sql, [(text tag, English text)]); empty
     effects give ("", [])."""
@@ -991,7 +1003,21 @@ def effects_sql(owner, owner_type, effects, display_name,
     for n, effect in enumerate(effects, 1):
         check_effect(effect, owner)
         mod_id = "{}_MOD_{}".format(_short(owner_type), n)
-        _write_effect(w, effect, mod_id, owner, display_name, name_of)
+        if owner == "suzerain":
+            # the effect, as an ability's, attached to the city-state's
+            # suzerain (as the game's own suzerain bonuses are)
+            inner = mod_id + "_BONUS"
+            _write_effect(w, effect, inner, "trait", display_name, name_of)
+            w.lines.append(
+                "INSERT INTO Modifiers (ModifierId, ModifierType, "
+                "SubjectRequirementSetId) VALUES ({}, "
+                "'MODIFIER_ALL_PLAYERS_ATTACH_MODIFIER', {});\n"
+                "INSERT INTO ModifierArguments (ModifierId, Name, Value) "
+                "VALUES ({}, 'ModifierId', {});".format(
+                    sql_str(mod_id), sql_str(SUZERAIN_SET),
+                    sql_str(mod_id), sql_str(inner)))
+        else:
+            _write_effect(w, effect, mod_id, owner, display_name, name_of)
         if owner == "unit":
             w.lines.append(
                 "INSERT INTO UnitAbilityModifiers (UnitAbilityType, "

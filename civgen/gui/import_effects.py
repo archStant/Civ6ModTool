@@ -10,7 +10,8 @@ from ..modifiers import describe_game_modifier, effect_from_game, is_raw
 from . import theme
 from .widgets import FilterCombo, ScrollFrame, fit_to_screen, type_label
 
-OWNER_WORDS = {"trait": "an ability", "building": "a building",
+OWNER_WORDS = {"trait": "an ability", "suzerain": "a suzerain bonus",
+               "building": "a building",
                "district": "a district", "improvement": "an improvement",
                "unit": "a unit", "attached": "an attached effect"}
 

@@ -23,7 +23,98 @@ from .widgets import (ImagePreview, ScrollFrame, TypeCombo, browse_image,
 ICON_FILE, ICON_CIV = "file", "civ"
 
 
-class CivEditor(tk.Toplevel):
+class CivPartsMixin:
+    """The parts a civilization and a city-state editor share: city
+    names and start bias. Needs self.app and self.spec."""
+
+    def _build_city_names(self, body, hint, choices):
+        ttk.Label(body, wraplength=760, justify="left", text=hint).grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+        frame, self.city_text = names_text(body, self.spec.get("city_names"),
+                                           height=22, width=40)
+        frame.grid(row=1, column=0, sticky="nw")
+        side = ttk.Frame(body)
+        side.grid(row=1, column=1, sticky="nw", padx=(16, 0))
+        ttk.Label(side, text="Copy the names of").pack(anchor="w")
+        self.copy_names_from = TypeCombo(side, choices, width=30)
+        self.copy_names_from.pack(anchor="w", pady=4)
+        ttk.Button(side, text="Copy city names",
+                   command=self._copy_city_names).pack(anchor="w")
+
+    def _copy_city_names(self):
+        civ = self.copy_names_from.get_type()
+        names = self.app.data.city_names(civ)
+        if not names:
+            messagebox.showinfo("No city names", "No city names found for {}. "
+                                "Load the game cache first (main window)."
+                                .format(civ or "(no civilization)"),
+                                parent=self)
+            return
+        if text_lines(self.city_text) and not messagebox.askyesno(
+                "Replace city names", "Replace the list with the {} names "
+                "of {}?".format(len(names), civ), parent=self):
+            return
+        self.city_text.delete("1.0", "end")
+        self.city_text.insert("1.0", "\n".join(names))
+
+    def _build_bias(self, body, who="civilization"):
+        ttk.Label(body, wraplength=760, justify="left", text=(
+            "Where the {} prefers to start: tier 1 is the strongest "
+            "preference, 5 the weakest.".format(who))).grid(
+            row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
+        bias = self.spec.get("start_bias") or {}
+        self.bias_list = ttk.Frame(body)
+        self.bias_list.grid(row=1, column=0, columnspan=4, sticky="w")
+        self.bias_rows = []
+        for kind in START_BIAS:
+            for type_name, tier in sorted((bias.get(kind) or {}).items()):
+                self._add_bias(kind, type_name, tier)
+        add = ttk.Frame(body)
+        add.grid(row=2, column=0, columnspan=4, sticky="w", pady=6)
+        for kind in START_BIAS:
+            ttk.Button(add, text="Add {}".format(kind),
+                       command=lambda k=kind: self._add_bias(k, "", 3)).pack(
+                side="left", padx=(0, 6))
+        river = ttk.Frame(body)
+        river.grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        self.river_on = tk.BooleanVar(value=bias.get("river") is not None)
+        self.river_tier = tk.StringVar(value=str(bias.get("river") or 3))
+        ttk.Checkbutton(river, text="Rivers, tier", variable=self.river_on
+                        ).pack(side="left")
+        ttk.Spinbox(river, from_=1, to=5, width=4,
+                    textvariable=self.river_tier).pack(side="left", padx=4)
+
+    def _add_bias(self, kind, type_name, tier):
+        frame = ttk.Frame(self.bias_list)
+        frame.pack(anchor="w", pady=2)
+        ttk.Label(frame, text=kind.title(), width=10).pack(side="left")
+        combo = TypeCombo(frame, self.app.data.type_choices(kind), type_name,
+                          width=40)
+        combo.pack(side="left")
+        tier_var = tk.StringVar(value=str(tier))
+        ttk.Label(frame, text="tier").pack(side="left", padx=(8, 2))
+        ttk.Spinbox(frame, from_=1, to=5, width=4, textvariable=tier_var
+                    ).pack(side="left")
+        row = {"frame": frame, "kind": kind, "combo": combo,
+               "tier": tier_var}
+        ttk.Button(frame, text="Remove", command=lambda: (
+            frame.destroy(), self.bias_rows.remove(row))).pack(side="left",
+                                                               padx=6)
+        self.bias_rows.append(row)
+
+    def _start_bias(self):
+        """The start bias as the editor shows it (spec form)."""
+        bias = {kind: {} for kind in START_BIAS}
+        for row in self.bias_rows:
+            type_name = row["combo"].get_type()
+            if type_name:
+                bias[row["kind"]][type_name] = row["tier"].get().strip()
+        bias["river"] = (self.river_tier.get().strip()
+                         if self.river_on.get() else None)
+        return bias
+
+
+class CivEditor(CivPartsMixin, tk.Toplevel):
     """Edit a civilization spec (see civs.py); .result holds the edited
     spec after OK."""
 
@@ -334,36 +425,10 @@ class CivEditor(tk.Toplevel):
     # -- names ----------------------------------------------------------------
 
     def _build_cities(self, body):
-        ttk.Label(body, wraplength=760, justify="left", text=(
+        self._build_city_names(body, (
             "City names, one per line. The first one is the capital. Leaders "
-            "with city names of their own use those first.")).grid(
-            row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
-        frame, self.city_text = names_text(body, self.spec.get("city_names"),
-                                           height=22, width=40)
-        frame.grid(row=1, column=0, sticky="nw")
-        side = ttk.Frame(body)
-        side.grid(row=1, column=1, sticky="nw", padx=(16, 0))
-        ttk.Label(side, text="Copy the names of").pack(anchor="w")
-        self.copy_names_from = TypeCombo(side, self._civ_choices(), width=30)
-        self.copy_names_from.pack(anchor="w", pady=4)
-        ttk.Button(side, text="Copy city names",
-                   command=self._copy_city_names).pack(anchor="w")
-
-    def _copy_city_names(self):
-        civ = self.copy_names_from.get_type()
-        names = self.app.data.city_names(civ)
-        if not names:
-            messagebox.showinfo("No city names", "No city names found for {}. "
-                                "Load the game cache first (main window)."
-                                .format(civ or "(no civilization)"),
-                                parent=self)
-            return
-        if text_lines(self.city_text) and not messagebox.askyesno(
-                "Replace city names", "Replace the list with the {} names "
-                "of {}?".format(len(names), civ), parent=self):
-            return
-        self.city_text.delete("1.0", "end")
-        self.city_text.insert("1.0", "\n".join(names))
+            "with city names of their own use those first."),
+            self._civ_choices())
 
     def _build_citizens(self, body):
         ttk.Label(body, wraplength=760, justify="left", text=(
@@ -379,53 +444,6 @@ class CivEditor(tk.Toplevel):
                                      width=22)
             frame.grid(row=2, column=col, sticky="nw", padx=4)
             self.citizen_texts[key] = text
-
-    # -- start bias -----------------------------------------------------------
-
-    def _build_bias(self, body):
-        ttk.Label(body, wraplength=760, justify="left", text=(
-            "Where the civilization prefers to start: tier 1 is the "
-            "strongest preference, 5 the weakest.")).grid(
-            row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
-        bias = self.spec.get("start_bias") or {}
-        self.bias_list = ttk.Frame(body)
-        self.bias_list.grid(row=1, column=0, columnspan=4, sticky="w")
-        self.bias_rows = []
-        for kind in START_BIAS:
-            for type_name, tier in sorted((bias.get(kind) or {}).items()):
-                self._add_bias(kind, type_name, tier)
-        add = ttk.Frame(body)
-        add.grid(row=2, column=0, columnspan=4, sticky="w", pady=6)
-        for kind in START_BIAS:
-            ttk.Button(add, text="Add {}".format(kind),
-                       command=lambda k=kind: self._add_bias(k, "", 3)).pack(
-                side="left", padx=(0, 6))
-        river = ttk.Frame(body)
-        river.grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 0))
-        self.river_on = tk.BooleanVar(value=bias.get("river") is not None)
-        self.river_tier = tk.StringVar(value=str(bias.get("river") or 3))
-        ttk.Checkbutton(river, text="Rivers, tier", variable=self.river_on
-                        ).pack(side="left")
-        ttk.Spinbox(river, from_=1, to=5, width=4,
-                    textvariable=self.river_tier).pack(side="left", padx=4)
-
-    def _add_bias(self, kind, type_name, tier):
-        frame = ttk.Frame(self.bias_list)
-        frame.pack(anchor="w", pady=2)
-        ttk.Label(frame, text=kind.title(), width=10).pack(side="left")
-        combo = TypeCombo(frame, self.app.data.type_choices(kind), type_name,
-                          width=40)
-        combo.pack(side="left")
-        tier_var = tk.StringVar(value=str(tier))
-        ttk.Label(frame, text="tier").pack(side="left", padx=(8, 2))
-        ttk.Spinbox(frame, from_=1, to=5, width=4, textvariable=tier_var
-                    ).pack(side="left")
-        row = {"frame": frame, "kind": kind, "combo": combo,
-               "tier": tier_var}
-        ttk.Button(frame, text="Remove", command=lambda: (
-            frame.destroy(), self.bias_rows.remove(row))).pack(side="left",
-                                                               padx=6)
-        self.bias_rows.append(row)
 
     # -- Civilopedia -----------------------------------------------------------
 
@@ -457,13 +475,6 @@ class CivEditor(tk.Toplevel):
     def on_ok(self):
         spec = dict(self.spec)
         use_file = self.icon_mode.get() == ICON_FILE
-        bias = {kind: {} for kind in START_BIAS}
-        for row in self.bias_rows:
-            type_name = row["combo"].get_type()
-            if type_name:
-                bias[row["kind"]][type_name] = row["tier"].get().strip()
-        bias["river"] = self.river_tier.get().strip() \
-            if self.river_on.get() else None
         spec.update({
             "name": self.name_var.get().strip(),
             "adjective": self.adjective_var.get().strip(),
@@ -484,7 +495,7 @@ class CivEditor(tk.Toplevel):
             "city_names": text_lines(self.city_text),
             "citizen_names": {key: text_lines(text) for key, text in
                               self.citizen_texts.items()},
-            "start_bias": bias,
+            "start_bias": self._start_bias(),
             "pedia": dict({key: var.get().strip()
                            for key, var in self.pedia_vars.items()},
                           history=self.history.get("1.0", "end").strip()),

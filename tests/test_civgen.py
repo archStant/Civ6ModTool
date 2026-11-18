@@ -20,9 +20,9 @@ import xml.etree.ElementTree as ET
 import zipfile
 import zlib
 
-from civgen import (agendas, art, artdefs, civs, landmarks, leaders,
-                    modbuild, modifiers, moments, moods, project, religions,
-                    unit_art, unit_models, uniques)
+from civgen import (agendas, art, artdefs, citystates, civs, landmarks,
+                    leaders, modbuild, modifiers, moments, moods, project,
+                    religions, unit_art, unit_models, uniques)
 from civgen import gamedata
 from civgen.gamedata import GameData
 from civgen.util import find_game_cache, find_game_dir
@@ -316,8 +316,28 @@ class GeneratedModTest(unittest.TestCase):
                    icon_from="RELIGION_SHINTO", renameable=True)
         leader_specs[1]["favored_religion_id"] = own["id"]
         leader_specs[4]["favored_religion"] = "RELIGION_ISLAM"
-        cls.civs, cls.ctxs, errors, cls.religions = modbuild.prepare_project(
-            leader_specs, civ_specs, game_data(), "TST", [own, sun])
+        # a city-state with effects of its own and no icon (the unknown
+        # civilization's), and one copying Kabul's bonus, text and icon
+        tower = dict(citystates.new_city_state_spec(), name="Tower Isle",
+                     category="SCIENTIFIC",
+                     city_names=["Tower Isle", "Low Isle"],
+                     start_bias={"terrain": {"TERRAIN_COAST": 1},
+                                 "feature": {}, "resource": {},
+                                 "river": None},
+                     pedia={"history": "Old.\n\nVery old."})
+        tower["bonus"] = {"name": "Tower Isle Suzerain Bonus",
+                          "desc": "+2 [ICON_Science] Science in every city.",
+                          "clone": [],
+                          "effects": [modifiers.new_effect("city_yield"),
+                                      modifiers.new_effect("movement")]}
+        hold = dict(citystates.new_city_state_spec(), name="Hold",
+                    category="MILITARISTIC",
+                    icon_from="CIVILIZATION_KABUL", city_names=["Hold"])
+        hold["bonus"]["clone"] = ["MINOR_CIV_KABUL_TRAIT"]
+        (cls.civs, cls.ctxs, errors, cls.religions,
+         cls.city_states) = modbuild.prepare_project(
+            leader_specs, civ_specs, game_data(), "TST", [own, sun],
+            [tower, hold])
         assert not errors, errors
         # custom files (advanced mode): a SQL file, and a script for
         # Gathering Storm only
@@ -337,7 +357,8 @@ class GeneratedModTest(unittest.TestCase):
         modbuild.write_mod("Test Mod", cls.ctxs, "TestMod", cls.mod_dir,
                            "guid", None, cls.report, lambda text: None,
                            cls.civs, game_data().type_name,
-                           extra_files=extra_files, religions=cls.religions)
+                           extra_files=extra_files, religions=cls.religions,
+                           city_states=cls.city_states)
 
     @classmethod
     def tearDownClass(cls):
@@ -501,6 +522,68 @@ class GeneratedModTest(unittest.TestCase):
                          [("LEADER_T_ROOSEVELT",)])
         self.assertEqual(q("SELECT * FROM AltLeaderScenes WHERE LeaderType "
                            "= 'LEADER_TST_ANTIOPE'"), [])
+        # city-states
+        self.assertEqual(q("SELECT CivilizationType, "
+                           "StartingCivilizationLevelType, RandomCityNameDepth "
+                           "FROM Civilizations WHERE CivilizationType IN "
+                           "('CIVILIZATION_TST_TOWER_ISLE', "
+                           "'CIVILIZATION_TST_HOLD') ORDER BY 1"),
+                         [("CIVILIZATION_TST_HOLD",
+                           "CIVILIZATION_LEVEL_CITY_STATE", 1),
+                          ("CIVILIZATION_TST_TOWER_ISLE",
+                           "CIVILIZATION_LEVEL_CITY_STATE", 1)])
+        self.assertEqual(q("SELECT Value FROM TypeProperties WHERE Type = "
+                           "'CIVILIZATION_TST_TOWER_ISLE' AND Name = "
+                           "'CityStateCategory'"), [("SCIENTIFIC",)])
+        self.assertEqual(q("SELECT LeaderType, InheritFrom FROM Leaders WHERE "
+                           "LeaderType LIKE 'LEADER_MINOR_CIV_TST%' "
+                           "ORDER BY 1"),
+                         [("LEADER_MINOR_CIV_TST_HOLD",
+                           "LEADER_MINOR_CIV_MILITARISTIC"),
+                          ("LEADER_MINOR_CIV_TST_TOWER_ISLE",
+                           "LEADER_MINOR_CIV_SCIENTIFIC")])
+        self.assertEqual(q("SELECT CapitalName FROM CivilizationLeaders WHERE "
+                           "LeaderType = 'LEADER_MINOR_CIV_TST_TOWER_ISLE'"),
+                         [("LOC_CITY_NAME_CIVILIZATION_TST_TOWER_ISLE_1",)])
+        self.assertEqual(len(q("SELECT * FROM CityNames WHERE "
+                               "CivilizationType = "
+                               "'CIVILIZATION_TST_TOWER_ISLE'")), 2)
+        self.assertEqual(q("SELECT TerrainType, Tier FROM StartBiasTerrains "
+                           "WHERE CivilizationType = "
+                           "'CIVILIZATION_TST_TOWER_ISLE'"),
+                         [("TERRAIN_COAST", 1)])
+        # its own effects: each attached to the suzerain
+        tower = "MINOR_CIV_TST_TOWER_ISLE_TRAIT"
+        outer = q("SELECT m.ModifierId, m.ModifierType, "
+                  "m.SubjectRequirementSetId, a.Value FROM TraitModifiers t "
+                  "JOIN Modifiers m USING (ModifierId) JOIN ModifierArguments "
+                  "a ON a.ModifierId = m.ModifierId AND a.Name = 'ModifierId' "
+                  "WHERE t.TraitType = ? ORDER BY 1".replace("?", repr(tower)))
+        self.assertEqual(len(outer), 2)
+        for mod_id, mod_type, req_set, inner in outer:
+            self.assertEqual((mod_type, req_set),
+                             ("MODIFIER_ALL_PLAYERS_ATTACH_MODIFIER",
+                              "PLAYER_IS_SUZERAIN"))
+            self.assertEqual(inner, mod_id + "_BONUS")
+        # (the unit effect: the suzerain's units get an ability)
+        self.assertEqual(q("SELECT ModifierType FROM Modifiers WHERE "
+                           "ModifierId = " + repr(outer[1][3])),
+                         [("MODIFIER_PLAYER_UNITS_GRANT_ABILITY",)])
+        # the copied bonus: Kabul's own modifiers
+        self.assertEqual(
+            q("SELECT ModifierId FROM TraitModifiers WHERE TraitType = "
+              "'MINOR_CIV_TST_HOLD_TRAIT' ORDER BY 1"),
+            q("SELECT ModifierId FROM TraitModifiers WHERE TraitType = "
+              "'MINOR_CIV_KABUL_TRAIT' ORDER BY 1"))
+        self.assertEqual(q("SELECT Name, Description FROM Traits WHERE "
+                           "TraitType = 'MINOR_CIV_TST_HOLD_TRAIT'"),
+                         [("LOC_LEADER_TRAIT_KABUL_NAME",
+                           "LOC_LEADER_TRAIT_KABUL_DESCRIPTION")])
+        if gathering_storm_cache():
+            self.assertEqual(q("SELECT MinorCivBonusType FROM Leaders_XP2 "
+                               "WHERE LeaderType = "
+                               "'LEADER_MINOR_CIV_TST_HOLD'"),
+                             [("MINOR_CIV_BONUS_MILITARISTIC",)])
 
     def test_advanced_effects(self):
         """Raw effects, attached effects and 'any of' requirements: rows
@@ -760,6 +843,21 @@ class GeneratedModTest(unittest.TestCase):
         self.assertTrue(db.execute(
             "SELECT 1 FROM Players WHERE LeaderType = 'LEADER_TST_JEANNE' AND "
             "CivilizationType = 'CIVILIZATION_FRANCE'").fetchall())
+        # city-states: on every ruleset's list
+        rows = db.execute(
+            "SELECT Domain, Name, Icon, CityStateCategory, Bonus FROM "
+            "CityStates WHERE CivilizationType = "
+            "'CIVILIZATION_TST_TOWER_ISLE' ORDER BY 1").fetchall()
+        self.assertEqual([r[0] for r in rows],
+                         sorted(citystates.CITY_STATE_DOMAINS))
+        self.assertEqual(set(r[1:] for r in rows), {(
+            "LOC_CIVILIZATION_TST_TOWER_ISLE_NAME",
+            "ICON_CIVILIZATION_TST_TOWER_ISLE", "SCIENTIFIC",
+            "LOC_MINOR_CIV_TST_TOWER_ISLE_TRAIT_DESCRIPTION")})
+        self.assertEqual({b for (b,) in db.execute(
+            "SELECT Bonus FROM CityStates WHERE CivilizationType = "
+            "'CIVILIZATION_TST_HOLD'")},
+            {"LOC_LEADER_TRAIT_KABUL_DESCRIPTION"})
 
     def test_text_sql_runs(self):
         db = sqlite3.connect(":memory:")
@@ -775,7 +873,13 @@ class GeneratedModTest(unittest.TestCase):
                     "LOC_PEDIA_BUILDINGS_PAGE_BUILDING_TST_TEMPLE_OF_ARES_"
                     "CHAPTER_HISTORY_PARA_1",
                     "LOC_TRAIT_LEADER_TST_HIPPOLYTA_DESCRIPTION",
-                    "LOC_CITY_NAME_CIVILIZATION_TST_AMAZONS_1"):
+                    "LOC_CITY_NAME_CIVILIZATION_TST_AMAZONS_1",
+                    "LOC_CIVILIZATION_TST_TOWER_ISLE_NAME",
+                    "LOC_CIVILIZATION_TST_TOWER_ISLE_DESCRIPTION",
+                    "LOC_MINOR_CIV_TST_TOWER_ISLE_TRAIT_NAME",
+                    "LOC_MINOR_CIV_TST_TOWER_ISLE_TRAIT_DESCRIPTION",
+                    "LOC_PEDIA_CITYSTATES_PAGE_CIVILIZATION_TST_TOWER_ISLE_"
+                    "CHAPTER_HISTORY_PARA_2"):
             self.assertIn(tag, tags)
 
     def test_every_text_tag_used_is_defined(self):
@@ -818,7 +922,10 @@ class GeneratedModTest(unittest.TestCase):
             "32, 'x'); INSERT INTO IconDefinitions (Name, Atlas, \"Index\") "
             "VALUES ('ICON_UNIT_ROMAN_LEGION', 'ICON_ATLAS_UNITS', 34), "
             "('ICON_IMPROVEMENT_PAIRIDAEZA', 'ICON_ATLAS_UNITS', 7), "
-            "('ICON_CIVILIZATION_INCA', 'ICON_ATLAS_CIVILIZATION_INCA', 0);"
+            "('ICON_CIVILIZATION_INCA', 'ICON_ATLAS_CIVILIZATION_INCA', 0), "
+            "('ICON_CIVILIZATION_KABUL', 'ICON_ATLAS_CIVILIZATION_INCA', 3), "
+            "('ICON_CIVILIZATION_UNKNOWN', 'ICON_ATLAS_CIVILIZATION_INCA', "
+            "9);"
             # religion icons: in the small icons' atlas and their own
             "INSERT INTO IconTextureAtlases (Name, IconSize, FileName) "
             "VALUES ('ICON_ATLAS_RELIGIONS', 50, 'x'), "
@@ -841,6 +948,14 @@ class GeneratedModTest(unittest.TestCase):
         self.assertEqual(db.execute(
             "SELECT \"Index\" FROM IconDefinitions WHERE Name = "
             "'ICON_IMPROVEMENT_TST_SACRED_GROVE'").fetchall(), [(7,)])
+        # city-states: a game city-state's icon; without one, the unknown
+        # civilization's
+        self.assertEqual(db.execute(
+            "SELECT \"Index\" FROM IconDefinitions WHERE Name = "
+            "'ICON_CIVILIZATION_TST_HOLD'").fetchall(), [(3,)])
+        self.assertEqual(db.execute(
+            "SELECT \"Index\" FROM IconDefinitions WHERE Name = "
+            "'ICON_CIVILIZATION_TST_TOWER_ISLE'").fetchall(), [(9,)])
         # every size of the religion's icon
         for icon, source in (("ICON_RELIGION_TST_SUN_CULT", "SHINTO"),
                              ("ICON_RELIGION_TST_OLD_WAYS", "CUSTOM_1")):
@@ -865,6 +980,16 @@ class GeneratedModTest(unittest.TestCase):
         ids = [a.get("id") for actions in modinfo
                if actions.tag.endswith("Actions") for a in actions]
         self.assertEqual(len(ids), len(set(ids)), "action ids must be unique")
+        colors = ET.fromstring(read(self.mod_dir,
+                                    "Config/NewLeader_Colors.xml"))
+        rows = {r.findtext("Type"): r for r in colors.iter("Row")}
+        isle = rows["CIVILIZATION_TST_TOWER_ISLE"]
+        self.assertEqual((isle.findtext("Usage"),
+                          isle.findtext("PrimaryColor"),
+                          isle.findtext("SecondaryColor")),
+                         ("Minor", "COLOR_PLAYER_CITY_STATE_PRIMARY",
+                          "COLOR_PLAYER_CITY_STATE_SCIENCE_SECONDARY"))
+        self.assertIn("city-states", modinfo.findtext("Properties/Teaser"))
 
     def test_unique_art_is_copied(self):
         self.assertEqual(
@@ -1767,7 +1892,7 @@ class MomentsTest(unittest.TestCase):
 
     def test_civ_moments(self):
         entry = {"item": "unit_tst_x", "path": MOMENT_IMAGE, "half": True}
-        civ_ctxs, ctxs, errors, _ = modbuild.prepare_project(
+        civ_ctxs, ctxs, errors, _, _ = modbuild.prepare_project(
             [self.leader()], [self.civ(moment_illustrations=[entry])],
             self.NoData(), "TST")
         self.assertEqual(errors, [])
@@ -1779,7 +1904,7 @@ class MomentsTest(unittest.TestCase):
         self.assertIn("'UNIT_TST_X', "
                       "'MOMENT_CIVILIZATION_TST_AMAZONS_UNIT_TST_X.dds'", sql)
         # one picture per item, whoever has it
-        _, _, errors, _ = modbuild.prepare_project(
+        _, _, errors, _, _ = modbuild.prepare_project(
             [self.leader(moment_illustrations=[entry])],
             [self.civ(moment_illustrations=[entry])], self.NoData(), "TST")
         self.assertEqual(len(errors), 1)
@@ -2696,19 +2821,19 @@ class ReligionTest(unittest.TestCase):
         lead.update(name="Q", civ="CIVILIZATION_SUMERIA",
                     orig="LEADER_GILGAMESH",
                     favored_religion_id=religion["id"])
-        _, ctxs, errors, found = modbuild.prepare_project(
+        _, ctxs, errors, found, _ = modbuild.prepare_project(
             [lead], [], self.NoData(), "TST", [religion])
         self.assertEqual(errors, [])
         self.assertEqual(ctxs[0]["favored_religion"], "RELIGION_TST_OLD_WAYS")
         self.assertEqual([r["slug"] for r in found],
                          ["RELIGION_TST_OLD_WAYS"])
         # the religion it favored is gone
-        _, _, errors, _ = modbuild.prepare_project(
+        _, _, errors, _, _ = modbuild.prepare_project(
             [lead], [], self.NoData(), "TST", [])
         self.assertEqual(len(errors), 1)
         self.assertIn("no longer in the project", errors[0])
         # two religions of one name
-        _, _, errors, _ = modbuild.prepare_project(
+        _, _, errors, _, _ = modbuild.prepare_project(
             [], [], self.NoData(), "TST", [religion, self.religion()])
         self.assertIn("duplicate type", errors[0])
 
@@ -2957,6 +3082,93 @@ class ReligionTest(unittest.TestCase):
         self.assertEqual(found, [religion])     # (the image is still there)
 
 
+class CityStateTest(unittest.TestCase):
+    """New city-states."""
+
+    class NoData(ReligionTest.NoData):
+        pass
+
+    def city_state(self, **spec):
+        return dict(citystates.new_city_state_spec(), name="Tower Isle",
+                    city_names=["Tower Isle"],
+                    bonus={"name": "Isle Bonus", "desc": "", "clone": [],
+                           "effects": []}, **spec)
+
+    def test_normalize(self):
+        cs = citystates.normalize_city_state(
+            self.city_state(category="SCIENTIFIC"), self.NoData(), "TST")
+        self.assertEqual(
+            (cs["slug"], cs["leader"], cs["inherit_from"], cs["icon_name"],
+             cs["color_name"], cs["description"], cs["bonus"]["trait"]),
+            ("CIVILIZATION_TST_TOWER_ISLE", "LEADER_MINOR_CIV_TST_TOWER_ISLE",
+             "LEADER_MINOR_CIV_SCIENTIFIC", "ICON_CIVILIZATION_TST_TOWER_ISLE",
+             "SCIENCE", "Tower Isle city-state",
+             "MINOR_CIV_TST_TOWER_ISLE_TRAIT"))
+        sql, texts = citystates.city_state_sql(cs)
+        self.assertIn("'CIVILIZATION_LEVEL_CITY_STATE', 1", sql)
+        self.assertIn("'CityStateCategory', 'SCIENTIFIC'", sql)
+        self.assertEqual(texts, [])
+        # (without a description, the name stands in)
+        self.assertIn(("LOC_MINOR_CIV_TST_TOWER_ISLE_TRAIT_DESCRIPTION",
+                       "Isle Bonus"), citystates.city_state_text_rows(cs))
+        self.assertIn("'MINOR_CIV_BONUS_SCIENTIFIC'",
+                      citystates.city_state_xp2_sql(cs))
+        self.assertEqual(citystates.city_state_config_sql(cs).count(
+            "'CIVILIZATION_TST_TOWER_ISLE'"), 3)
+        self.assertIn("'ICON_CIVILIZATION_UNKNOWN'",
+                      citystates.city_state_icons_sql(cs))
+        self.assertIn("COLOR_PLAYER_CITY_STATE_SCIENCE_SECONDARY",
+                      modbuild.build_colors_xml([], [], [cs]))
+        for spec, message in (
+                (dict(name=""), "no name"),
+                (dict(city_names=[" "]), "city name"),
+                (dict(category="NAVAL"), "kind of city-state"),
+                (dict(bonus={"name": "", "clone": []}), "bonus a name"),
+                (dict(icon_path="C:/nope.png"), "not found"),
+                (dict(icon_from="RELIGION_X"), "not a civilization"),
+                (dict(bonus={"name": "B", "effects": [
+                    modifiers.new_effect("this_city_yield_pct")]}),
+                 "cannot be used here")):
+            with self.assertRaisesRegex(ValueError, message):
+                citystates.normalize_city_state(
+                    dict(self.city_state(), **spec), self.NoData(), "TST")
+
+    def test_suzerain_effects_sql(self):
+        sql, _ = modifiers.effects_sql(
+            "suzerain", "MINOR_CIV_X_TRAIT",
+            [modifiers.new_effect("city_yield")], "X")
+        self.assertIn("'MODIFIER_ALL_PLAYERS_ATTACH_MODIFIER', "
+                      "'PLAYER_IS_SUZERAIN'", sql)
+        self.assertIn("VALUES ('CIV_X_TRAIT_MOD_1', 'ModifierId', "
+                      "'CIV_X_TRAIT_MOD_1_BONUS')", sql)
+        self.assertIn("VALUES ('MINOR_CIV_X_TRAIT', 'CIV_X_TRAIT_MOD_1')",
+                      sql)
+        self.assertNotIn("'MINOR_CIV_X_TRAIT', 'CIV_X_TRAIT_MOD_1_BONUS'",
+                         sql)
+
+    def test_prepare_project(self):
+        cs = self.city_state()
+        _, _, errors, _, found = modbuild.prepare_project(
+            [], [], self.NoData(), "TST", [], [cs])
+        self.assertEqual(errors, [])
+        self.assertEqual([c["slug"] for c in found],
+                         ["CIVILIZATION_TST_TOWER_ISLE"])
+        # a civilization of the same name
+        civ = dict(civs.new_civ_spec(), name="Tower Isle",
+                   city_names=["A"], ability={"name": "A"})
+        _, _, errors, _, _ = modbuild.prepare_project(
+            [], [civ], self.NoData(), "TST", [], [cs])
+        self.assertIn("duplicate type CIVILIZATION_TST_TOWER_ISLE",
+                      " ".join(errors))
+
+    def test_modinfo_teaser(self):
+        self.assertEqual(modbuild.modinfo_teaser(False, False, False, True),
+                         "New city-states")
+        self.assertEqual(modbuild.modinfo_teaser(False, True, True, True),
+                         "Alternate leaders for existing civilizations and "
+                         "new religions and new city-states")
+
+
 class ProjectFileTest(unittest.TestCase):
     """Projects are saved as JSON (*.civmod); older pickled *.altleader
     projects still open."""
@@ -2975,7 +3187,10 @@ class ProjectFileTest(unittest.TestCase):
                             "C:/mine/Rules.sql")],
                         "religions": [dict(religions.new_religion_spec(),
                                            name="Old Ways",
-                                           color=(1, 2, 3))]}
+                                           color=(1, 2, 3))],
+                        "city_states": [dict(
+                            citystates.new_city_state_spec(),
+                            name="Tower Isle", city_names=["Tower Isle"])]}
 
     def test_round_trip(self):
         path = os.path.join(self.tmp, "a" + project.PROJECT_EXT)
@@ -3012,6 +3227,7 @@ class ProjectFileTest(unittest.TestCase):
         civ["moment_illustrations"] = [{"item": "UNIT_X",
                                         "path": image("moment.png")}]
         self.project["workshop"]["preview_path"] = image("preview.png")
+        self.project["city_states"][0]["icon_path"] = image("tower.png")
         rules = image("Rules.sql")
         self.project["extra_files"].append(modbuild.new_custom_file(rules))
         before = project.json_ready(self.project)
@@ -3024,6 +3240,7 @@ class ProjectFileTest(unittest.TestCase):
             self.assertEqual(sorted(zf.namelist()), [
                 "Amazons pack.civmod",
                 "custom_files/Rules.sql",
+                "images/city_states/Tower_Isle/icon.png",
                 "images/civilizations/Amazons/moments/UNIT_X.png",
                 "images/leaders/Jeanne/mood_happy.jpg",
                 "images/leaders/Jeanne/portrait.png",
@@ -3049,6 +3266,7 @@ class ProjectFileTest(unittest.TestCase):
                 (loaded["civs"][0]["moment_illustrations"][0]["path"],
                  "moment.png"),
                 (loaded["workshop"]["preview_path"], "preview.png"),
+                (loaded["city_states"][0]["icon_path"], "tower.png"),
                 (loaded["extra_files"][1]["path"], "Rules.sql")):
             self.assertTrue(os.path.isabs(path), path)
             with open(path, "rb") as fh:
@@ -3063,12 +3281,14 @@ class ProjectFileTest(unittest.TestCase):
         del old["civs"]                         # older still: no civs
         del old["extra_files"]                  # (nor custom files)
         del old["religions"]                    # (nor religions)
+        del old["city_states"]                  # (nor city-states)
         path = os.path.join(self.tmp, "old" + project.LEGACY_EXT)
         with open(path, "wb") as fh:
             pickle.dump(old, fh)
         loaded, version = project.load_project(path)
         self.assertEqual((version, loaded["civs"], loaded["extra_files"],
-                          loaded["religions"]), (3, [], [], []))
+                          loaded["religions"], loaded["city_states"]),
+                         (3, [], [], [], []))
         self.assertEqual(project.project_path_for(path),
                          os.path.join(self.tmp, "old" + project.PROJECT_EXT))
         # a pickle under another name is never unpickled
@@ -3201,7 +3421,7 @@ class ReferenceTest(unittest.TestCase):
             {"item": "UNIT_TST_NOT_THERE", "path": MOMENT_IMAGE}]
         self.civs[0]["uniques"][4]["stats"]["PrereqDistrict"] = \
             "DISTRICT_TST_GONE"
-        _, _, errors, _ = modbuild.prepare_project(
+        _, _, errors, _, _ = modbuild.prepare_project(
             self.leaders, self.civs, game_data() if CACHE else
             self.NoData(), "TST")
         self.assertTrue(any("UNIT_TST_NOT_THERE" in e for e in errors)
@@ -3758,7 +3978,7 @@ class EffectGameDataTest(unittest.TestCase):
         leader_specs, civ_specs = sample_project()
         civ_specs[0]["ability"]["effects"].append(
             modifiers.new_raw_effect("MODIFIER_NOPE"))
-        _, _, errors, _ = modbuild.prepare_project(leader_specs, civ_specs,
+        _, _, errors, _, _ = modbuild.prepare_project(leader_specs, civ_specs,
                                                 game_data(), "TST")
         self.assertIn("Amazons (civilization ability): effect 5 - the game "
                       "has no modifier type MODIFIER_NOPE",
@@ -3770,7 +3990,7 @@ class EffectGameDataTest(unittest.TestCase):
         leader_specs[1]["new_ability"]["effects"].append(
             modifiers.new_raw_effect("MODIFIER_PLAYER_GRANT_YIELD",
                                      {"Amount": ""}))
-        _, _, errors, _ = modbuild.prepare_project(leader_specs, civ_specs,
+        _, _, errors, _, _ = modbuild.prepare_project(leader_specs, civ_specs,
                                                 game_data(), "TST")
         text = "\n".join(errors)
         self.assertIn("Temple of Ares (Amazons): effect 2 - ", text)
@@ -3782,7 +4002,7 @@ class EffectGameDataTest(unittest.TestCase):
         twin = uniques.new_unique_spec("unit")
         twin.update(name="Amazon Warrior", base="UNIT_SWORDSMAN")
         leader_specs[0]["uniques"].append(twin)
-        _, _, errors, _ = modbuild.prepare_project(leader_specs, civ_specs,
+        _, _, errors, _, _ = modbuild.prepare_project(leader_specs, civ_specs,
                                                 game_data(), "TST")
         self.assertIn("Jeanne: duplicate type UNIT_TST_AMAZON_WARRIOR "
                       "(already used by Amazons)", "\n".join(errors))
@@ -3793,7 +4013,7 @@ class EffectGameDataTest(unittest.TestCase):
         twin.update(name="Amazon Warrior", base="BUILDING_LIBRARY",
                     effects=[modifiers.new_effect("tourism")])
         civ_specs[0]["uniques"].append(twin)
-        _, _, errors, _ = modbuild.prepare_project(leader_specs, civ_specs,
+        _, _, errors, _, _ = modbuild.prepare_project(leader_specs, civ_specs,
                                                 game_data(), "TST")
         self.assertIn("both have effects and the same name",
                       "\n".join(errors))

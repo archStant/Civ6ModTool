@@ -26,6 +26,10 @@ from .leaders import (colors_fragment, config_block,
                       needs_art, normalize_spec, text_rows, NO_RELIGION)
 from .civs import (CIV_ICON_SIZES, DEFAULT_MUSIC, civ_gameplay_sql,
                    civ_icons_sql, civ_text_rows, normalize_civ, sql_header)
+from .citystates import (city_state_color_row, city_state_config_sql,
+                         city_state_icons_sql, city_state_sql,
+                         city_state_text_rows, city_state_xp2_sql,
+                         normalize_city_state)
 from .religions import (INK_CENTRE, INK_SETTINGS, RELIGION_ICON_SIZES,
                         glowing_icon,
                         normalize_religion,
@@ -270,7 +274,8 @@ def modinfo_name(folder):
 def build_modinfo(mod_name, description, guid, has_icons, dep_file, files,
                   has_moments=False, has_scene=False, icons_sql=False,
                   has_xp2=False, has_civs=False, version=1, authors="",
-                  custom=(), has_religions=False, has_leaders=True):
+                  custom=(), has_religions=False, has_leaders=True,
+                  has_city_states=False):
     """dep_file: mod-relative .dep path when art (cooked or .artdef files)
     exists, else None. has_moments: add the expansion-only historic moment
     action. has_scene: import the patched UI/LeaderScene.lua. icons_sql:
@@ -280,7 +285,8 @@ def build_modinfo(mod_name, description, guid, has_icons, dep_file, files,
     Workshop update); authors: shown in the game's mod list. custom: the
     custom files' actions (see check_extra_files; their files are in
     files). has_religions: the mod adds religions; has_leaders: it adds
-    leaders (a mod may add only religions). The mod changes gameplay, so saved games need it
+    leaders (a mod may add only religions); has_city_states: it adds
+    city-states. The mod changes gameplay, so saved games need it
     (AffectsSavedGames)."""
     def modinfo_text(value):
         value = str(value).replace("\r\n", "\n").replace("\r", "\n")
@@ -359,22 +365,29 @@ def build_modinfo(mod_name, description, guid, has_icons, dep_file, files,
            authors=modinfo_text(authors or "Made with Civ 6 Mod Generator"),
            ingame_icons=icons("InGame"), frontend_icons=icons("FrontEnd"),
            criteria=criteria,
-           teaser=modinfo_teaser(has_civs, has_religions, has_leaders),
+           teaser=modinfo_teaser(has_civs, has_religions, has_leaders,
+                                 has_city_states),
            files="\n".join("    <File>{}</File>".format(xml_escape(f))
                            for f in files))
 
 
-def modinfo_teaser(has_civs, has_religions, has_leaders=True):
+def modinfo_teaser(has_civs, has_religions, has_leaders=True,
+                   has_city_states=False):
     what = ("New civilizations and leaders" if has_civs else
             "Alternate leaders for existing civilizations" if has_leaders
             else "")
-    if has_religions:
-        what = what + " and new religions" if what else "New religions"
+    extras = [n for n, has in (("religions", has_religions),
+                               ("city-states", has_city_states)) if has]
+    if extras:
+        more = " and ".join("new " + n for n in extras)
+        what = what + " and " + more if what else more[0].upper() + more[1:]
     return what
 
 
-def build_config_sql(ctxs):
-    return "\n".join(config_block(c) for c in ctxs)
+def build_config_sql(ctxs, city_states=()):
+    """city_states: city-state contexts, listed on the setup screen."""
+    return "\n".join([config_block(c) for c in ctxs] +
+                     [city_state_config_sql(cs) for cs in city_states])
 
 
 def build_gameplay_sql(ctxs):
@@ -426,14 +439,16 @@ def build_text_sql(ctxs, extra=()):
                                         "\n".join(inherited)))
 
 
-def build_colors_xml(ctxs, religions=()):
-    """religions: religion contexts, whose colors are added."""
+def build_colors_xml(ctxs, religions=(), city_states=()):
+    """religions: religion contexts, whose colors are added; city_states:
+    city-state contexts (their category's colors)."""
     color_rows, player_rows = [], []
     for c in ctxs:
         cr, pr = colors_fragment(c)
         color_rows.append(cr)
         player_rows.append(pr)
     color_rows += [religion_color_row(r) for r in religions]
+    player_rows += [city_state_color_row(cs) for cs in city_states]
     return """<?xml version="1.0" encoding="utf-8"?>
 <!-- Leader colors: city banners, map tint, diplo screen tint. -->
 <GameData>
@@ -532,8 +547,29 @@ def readme_civs(civs):
 """.format("\n".join(lines))
 
 
+def readme_city_states(city_states):
+    """README section on new city-states, or ""."""
+    if not city_states:
+        return ""
+    lines = ["  * {} ({}) - {}, suzerain bonus \"{}\"".format(
+        cs["name"], cs["slug"], cs["category"].lower(),
+        cs["bonus"]["name"] or cs["bonus"]["clone"][0])
+        for cs in city_states]
+    return """CITY-STATES
+{}
+
+  A city-state inherits from its kind's city-state leader
+  (LEADER_MINOR_CIV_MILITARISTIC, ...): the envoy bonuses, AI and colors
+  of its kind. Its suzerain bonus is a trait whose effects are attached
+  to its suzerain (the game's PLAYER_IS_SUZERAIN requirement set). It is
+  listed on the setup screen's City-States list (Config/
+  NewLeader_Config.sql, CityStates).
+
+""".format("\n".join(lines))
+
+
 def build_readme(mod_name, ctxs, icon_count, report, civs=(),
-                 modinfo="MyLeader.modinfo"):
+                 modinfo="MyLeader.modinfo", city_states=()):
     lines = "\n".join(
         "  * {name} ({slug}) - {civ}, inherits from {orig}{ability}{agenda}"
         "{cities}{uniques}".format(
@@ -555,7 +591,7 @@ shares the civilization's uniques (plus any listed with it, its own
 leader uniques). All gameplay effects are inherited;
 everything textual and visual is defined by this mod's own files.
 
-{civs}LEADERS
+{civs}{city_states}LEADERS
 {lines}
 
 FILES
@@ -629,6 +665,7 @@ GENERATION LOG
 """.format(mod_name=mod_name, lines=lines, icon_count=icon_count,
            modinfo=modinfo,
            civs=readme_civs(civs),
+           city_states=readme_city_states(city_states),
            log="\n".join("  " + r for r in report))
 
 
@@ -644,12 +681,28 @@ def all_uniques(civs, ctxs):
 
 
 def prepare_project(leader_specs, civ_specs, data, prefix="",
-                    religion_specs=()):
-    """Validate every civilization, leader and religion spec of a
-    project. Returns (civ contexts, leader contexts, errors, religion
-    contexts); every problem found is in errors (human-friendly
-    messages)."""
+                    religion_specs=(), city_state_specs=()):
+    """Validate every civilization, leader, religion and city-state spec
+    of a project. Returns (civ contexts, leader contexts, errors, religion
+    contexts, city-state contexts); every problem found is in errors
+    (human-friendly messages)."""
     errors, seen = [], {}
+    city_state_ctxs = []
+    for spec in city_state_specs:
+        try:
+            cs = normalize_city_state(spec, data, prefix)
+        except ValueError as exc:
+            errors.append(str(exc))
+            continue
+        types = [cs["slug"], cs["leader"]]
+        clash = next((t for t in types if t in seen), None)
+        if clash:
+            errors.append("{}: duplicate type {} (already used by {}) - "
+                          "rename one of them.".format(cs["name"], clash,
+                                                       seen[clash]))
+            continue
+        seen.update((t, cs["name"]) for t in types)
+        city_state_ctxs.append(cs)
     religion_ctxs = []
     for spec in religion_specs:
         try:
@@ -780,7 +833,7 @@ def prepare_project(leader_specs, civ_specs, data, prefix="",
             errors.append("{}: a civilization needs at least one leader - "
                           "add a leader whose civilization is {}.".format(
                               cc["name"], cc["slug"]))
-    return civ_ctxs, ctxs, errors, religion_ctxs
+    return civ_ctxs, ctxs, errors, religion_ctxs, city_state_ctxs
 
 
 # ---------------------------------------------------------------------------
@@ -790,7 +843,7 @@ def prepare_project(leader_specs, civ_specs, data, prefix="",
 def write_mod(mod_name, ctxs, folder, mod_dir, guid, cooker, report,
               progress, civs=(), name_of=None, publish=None, stamp=None,
               extra_files=(), religions=(), use_cache=True,
-              cache_limit=None):
+              cache_limit=None, city_states=()):
     """Cook the art and write every mod file (runs in a worker thread,
     so no Tk calls here; progress(text) updates the busy window). civs:
     contexts of the project's new civilizations (civs.normalize_civ);
@@ -800,7 +853,9 @@ def write_mod(mod_name, ctxs, folder, mod_dir, guid, cooker, report,
     workshop.build_stamp); extra_files: the custom files, checked (see
     check_extra_files); religions: contexts of the project's new
     religions (religions.normalize_religion); use_cache, cache_limit:
-    reuse art an earlier build made (see build_art). Returns the number of custom
+    reuse art an earlier build made (see build_art); city_states:
+    contexts of the project's new city-states
+    (citystates.normalize_city_state). Returns the number of custom
     icons. Raises OSError."""
     name_of = name_of or (lambda kind, t: type_display_name(t))
     icon_jobs = [(cc, cc["icon_path"], CIV_ICON_SIZES) for cc in civs
@@ -813,6 +868,9 @@ def write_mod(mod_name, ctxs, folder, mod_dir, guid, cooker, report,
     religions = list(religions)
     icon_jobs += [(r, r["icon_path"], RELIGION_ICON_SIZES)
                   for r in religions if r["icon_custom"]]
+    city_states = list(city_states)
+    icon_jobs += [(cs, cs["icon_path"], CIV_ICON_SIZES)
+                  for cs in city_states if cs["icon_custom"]]
     (icon_leader_files, cooked_files, ui_package,
      fallback_package) = build_art(ctxs, folder, mod_dir, report,
                                    cooker, progress, icon_jobs,
@@ -832,6 +890,11 @@ def write_mod(mod_name, ctxs, folder, mod_dir, guid, cooker, report,
     for r in religions:
         civ_sql.append(religion_sql(r))
         civ_texts += religion_text_rows(r)
+    for cs in city_states:
+        sql, texts = city_state_sql(cs, name_of)
+        civ_sql.append(sql)
+        xp2_sql.append(city_state_xp2_sql(cs))
+        civ_texts += city_state_text_rows(cs) + texts
     for cc in civs:
         sql, xp2, texts = civ_gameplay_sql(cc, name_of)
         civ_sql.append(sql)
@@ -849,7 +912,9 @@ def write_mod(mod_name, ctxs, folder, mod_dir, guid, cooker, report,
             civ_texts += unique_text_rows(u) + texts
     icons_sql = "\n".join(filter(None, [civ_icons_sql(cc) for cc in civs] +
                                  [unique_icons_sql(u) for u in uniques] +
-                                 [religion_icons_sql(r) for r in religions]))
+                                 [religion_icons_sql(r) for r in religions] +
+                                 [city_state_icons_sql(cs)
+                                  for cs in city_states]))
 
     # leaders without a diplomacy background of their own show the
     # original leader's layered scene through a patched LeaderScene.lua
@@ -887,17 +952,13 @@ def write_mod(mod_name, ctxs, folder, mod_dir, guid, cooker, report,
     mod_files.extend(f["name"] for f in extra_files)
 
     publish = publish or {}
-    description = "Adds alternate leaders: {}.".format(
-        ", ".join(c["name"] for c in ctxs))
-    if civs:
-        description = "Adds civilizations: {}; leaders: {}.".format(
-            ", ".join(cc["name"] for cc in civs),
-            ", ".join(c["name"] for c in ctxs))
-    if religions:
-        religion_note = "religions: {}.".format(
-            ", ".join(r["name"] for r in religions))
-        description = (description[:-1] + "; " + religion_note if ctxs
-                       else "Adds " + religion_note)
+    parts = [(label, owners) for label, owners in (
+        ("civilizations", civs),
+        ("leaders" if civs else "alternate leaders", ctxs),
+        ("religions", religions), ("city-states", city_states)) if owners]
+    description = "Adds {}.".format("; ".join(
+        "{}: {}".format(label, ", ".join(o["name"] for o in owners))
+        for label, owners in parts))
     # the Workshop description, as plain text (the game's mod list and
     # the uploader show it)
     description = publish.get("description") or description
@@ -920,7 +981,8 @@ def write_mod(mod_name, ctxs, folder, mod_dir, guid, cooker, report,
                         mod_files, has_moments, bool(scene_lua),
                         bool(icons_sql), bool(xp2_sql), bool(civs),
                         publish.get("version", 1), publish.get("author", ""),
-                        extra_files, bool(religions), bool(ctxs)))
+                        extra_files, bool(religions), bool(ctxs),
+                        bool(city_states)))
     # the custom files: copied as they are (an earlier build's go)
     custom_dir = os.path.join(mod_dir, CUSTOM_DIR)
     shutil.rmtree(custom_dir, ignore_errors=True)
@@ -951,11 +1013,13 @@ def write_mod(mod_name, ctxs, folder, mod_dir, guid, cooker, report,
                                               religions))
     elif os.path.isfile(os.path.join(mod_dir, MOMENTS_FILE)):
         os.remove(os.path.join(mod_dir, MOMENTS_FILE))
-    write("Config/NewLeader_Config.sql", build_config_sql(ctxs))
+    write("Config/NewLeader_Config.sql", build_config_sql(ctxs,
+                                                          city_states))
     if icon_leader_files:
         write("Config/NewLeader_Icons.xml",
               build_icons_xml(icon_leader_files))
-    write("Config/NewLeader_Colors.xml", build_colors_xml(ctxs, religions))
+    write("Config/NewLeader_Colors.xml", build_colors_xml(ctxs, religions,
+                                                          city_states))
     # civilizations first: their leaders' rows refer to them
     write("Gameplay/NewLeader_Gameplay.sql",
           "\n".join(civ_sql) + build_gameplay_sql(ctxs) +
@@ -963,7 +1027,7 @@ def write_mod(mod_name, ctxs, folder, mod_dir, guid, cooker, report,
     write("Text/NewLeader_Text.sql", build_text_sql(ctxs, civ_texts))
     write("README.txt", build_readme(mod_name, ctxs,
                                     len(icon_leader_files), report, civs,
-                                    modinfo))
+                                    modinfo, city_states))
     if stamp:                           # what it was generated from
         write(STAMP_FILE, stamp)
     return len(icon_leader_files)

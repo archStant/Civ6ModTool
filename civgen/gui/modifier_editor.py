@@ -32,6 +32,11 @@ OWNER_HINTS = {
     "trait": "Effects of an ability apply to the whole civilization. Unit "
              "effects are given to the player's units; add a 'Unit class "
              "is' / 'Unit is' condition to pick which.",
+    "suzerain": "Effects of a suzerain bonus apply to the city-state's "
+                "suzerain, as an ability of theirs, while they are its "
+                "suzerain (and at peace with it). Unit effects are given to "
+                "the suzerain's units; add a 'Unit class is' / 'Unit is' "
+                "condition to pick which.",
     "building": "Effects of a building apply once it is built: city "
                 "effects to its city, the others to the whole "
                 "civilization.",

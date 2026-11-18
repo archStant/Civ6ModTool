@@ -23,6 +23,8 @@ from ..civs import (CIV_BADGE_COLOR, civ_icon_preview, civ_slug,
                     new_civ_spec)
 from ..religions import (new_religion_spec, religion_icon_preview,
                          religion_slug)
+from ..citystates import (category_label, city_state_icon_preview,
+                          city_state_slug, new_city_state_spec)
 from ..uniques import KINDS, MAIN_TABLES
 from ..modbuild import (all_uniques, check_extra_files, prepare_project,
                         write_mod)
@@ -42,6 +44,7 @@ from .workshop_dialog import WorkshopDialog
 from .leader_editor import LeaderEditor
 from .civ_editor import CivEditor
 from .religion_editor import ReligionEditor
+from .city_state_editor import CityStateEditor
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +106,7 @@ class GeneratorApp(tk.Tk):
             "leaders": [],
             "civs": [],
             "religions": [],
+            "city_states": [],
             # Steam Workshop details (see workshop.py)
             "workshop": new_workshop_spec(),
             # files of the user's own (see modbuild.check_extra_files)
@@ -416,13 +420,16 @@ class GeneratorApp(tk.Tk):
         leader_tab = ttk.Frame(notebook, padding=6)
         civ_tab = ttk.Frame(notebook, padding=6)
         religion_tab = ttk.Frame(notebook, padding=6)
+        city_state_tab = ttk.Frame(notebook, padding=6)
         notebook.add(leader_tab, text="Leaders")
         notebook.add(civ_tab, text="Civilizations")
         notebook.add(religion_tab, text="Religions")
+        notebook.add(city_state_tab, text="City-States")
         leader_tab.columnconfigure(0, weight=1)
         leader_tab.rowconfigure(0, weight=1)
         self._build_civ_tab(civ_tab)
         self._build_religion_tab(religion_tab)
+        self._build_city_state_tab(city_state_tab)
         top.columnconfigure(0, weight=1)
         top.rowconfigure(1, weight=1)
 
@@ -570,6 +577,39 @@ class GeneratorApp(tk.Tk):
                           ("Remove", self.on_remove_religion)):
             ttk.Button(btns, text=text, command=cmd).pack(fill="x", pady=2)
 
+    def _build_city_state_tab(self, tab):
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(0, weight=1)
+        self.city_state_tree = ttk.Treeview(
+            tab, columns=("type", "category", "bonus"),
+            show="tree headings", height=8, selectmode="browse",
+            style="Leaders.Treeview")
+        self.city_state_tree.heading("#0", text="City-state")
+        self.city_state_tree.column("#0", width=230)
+        self.city_state_tree.heading("type", text="Type")
+        self.city_state_tree.column("type", width=230)
+        self.city_state_tree.heading("category", text="Kind")
+        self.city_state_tree.column("category", width=110)
+        self.city_state_tree.heading("bonus", text="Suzerain bonus")
+        self.city_state_tree.column("bonus", width=220)
+        self.city_state_tree.grid(row=0, column=0, sticky="nsew")
+        self.city_state_tree.bind("<Double-1>",
+                                  lambda e: self.on_edit_city_state())
+        ttk.Label(tab, foreground=theme.hint(), wraplength=640, justify="left",
+                  text="New city-states join the game's own: the setup "
+                       "screen's City-States list offers them, and games "
+                       "pick them like any other. Their kind gives them "
+                       "the envoy bonuses, colors and AI of that kind; the "
+                       "suzerain bonus is their own.").grid(
+                           row=1, column=0, sticky="w", pady=(3, 0))
+        btns = ttk.Frame(tab)
+        btns.grid(row=0, column=1, sticky="n", padx=(8, 0))
+        for text, cmd in (("Add...", self.on_add_city_state),
+                          ("Edit...", self.on_edit_city_state),
+                          ("Duplicate", self.on_duplicate_city_state),
+                          ("Remove", self.on_remove_city_state)):
+            ttk.Button(btns, text=text, command=cmd).pack(fill="x", pady=2)
+
     # -- unsaved-changes tracking ----------------------------------------------
 
     def _project_state(self):
@@ -582,7 +622,8 @@ class GeneratorApp(tk.Tk):
             self.project["leaders"], self.project["civs"],
             self.project.get("workshop"),
             self.project.get("extra_files") or [],
-            self.project.get("religions") or []])
+            self.project.get("religions") or [],
+            self.project.get("city_states") or []])
 
     def _mark_saved(self):
         """The current state is what is on disk (or a fresh project)."""
@@ -658,6 +699,7 @@ class GeneratorApp(tk.Tk):
         self._refresh_leader_list()
         self._refresh_civ_list()
         self._refresh_religion_list()
+        self._refresh_city_state_list()
         if hasattr(self, "custom_label"):
             self._refresh_custom_note()
 
@@ -726,6 +768,34 @@ class GeneratorApp(tk.Tk):
                         values=(religion_type,
                                 ", ".join(favored.get(religion_type, []))
                                 or "(no leader)"))
+        if selected and tree.exists(selected[0]):
+            tree.selection_set(selected)
+        self._update_save_button()
+
+    def _refresh_city_state_list(self):
+        tree = self.city_state_tree
+        selected = tree.selection()
+        tree.delete(*tree.get_children())
+        self._city_state_icons = []
+        bonus_names = dict(self.data.city_state_bonus_choices())
+        for i, spec in enumerate(self.project.get("city_states") or []):
+            photo = ""
+            try:
+                from PIL import ImageTk
+                photo = ImageTk.PhotoImage(city_state_icon_preview(
+                    spec, theme.scaled(LIST_ICON_SIZE)))
+                self._city_state_icons.append(photo)
+            except ImportError:         # no Pillow: names only
+                pass
+            bonus = spec.get("bonus") or {}
+            copied = [bonus_names.get(t, t) for t in
+                      bonus.get("clone") or []]
+            tree.insert("", "end", iid=str(i), image=photo,
+                        text="  " + spec.get("name", ""),
+                        values=(city_state_slug(spec, self.type_prefix()),
+                                category_label(spec.get("category")),
+                                (bonus.get("name") or "").strip() or
+                                ", ".join(copied) or "(none yet)"))
         if selected and tree.exists(selected[0]):
             tree.selection_set(selected)
         self._update_save_button()
@@ -940,6 +1010,64 @@ class GeneratorApp(tk.Tk):
         del self.project["religions"][i]
         self._refresh_lists()
 
+    # -- city-state list -------------------------------------------------------
+
+    def _selected_city_state(self):
+        sel = self.city_state_tree.selection()
+        if not sel:
+            messagebox.showinfo("No selection",
+                                "Select a city-state in the list first.")
+            return None
+        return int(sel[0])
+
+    def _city_state_dialog(self, spec, title):
+        editor = CityStateEditor(self, spec, title=title)
+        self.wait_window(editor)
+        return editor.result
+
+    def on_add_city_state(self):
+        result = self._city_state_dialog(new_city_state_spec(),
+                                         "Add city-state")
+        if result:
+            states = self.project.setdefault("city_states", [])
+            states.append(result)
+            self._refresh_lists()
+            self.city_state_tree.selection_set(str(len(states) - 1))
+
+    def on_edit_city_state(self):
+        i = self._selected_city_state()
+        if i is None:
+            return
+        spec = self.project["city_states"][i]
+        result = self._city_state_dialog(spec,
+                                         "Edit " + spec.get("name", ""))
+        if result:
+            self.project["city_states"][i] = result
+            self._refresh_lists()
+            self.city_state_tree.selection_set(str(i))
+
+    def on_duplicate_city_state(self):
+        i = self._selected_city_state()
+        if i is None:
+            return
+        spec = copy.deepcopy(self.project["city_states"][i])
+        spec["name"] = (spec.get("name") or "City-state") + " copy"
+        spec["id"] = str(uuid.uuid4())
+        self.project["city_states"].insert(i + 1, spec)
+        self._refresh_lists()
+        self.city_state_tree.selection_set(str(i + 1))
+
+    def on_remove_city_state(self):
+        i = self._selected_city_state()
+        if i is None:
+            return
+        spec = self.project["city_states"][i]
+        if not messagebox.askyesno("Remove city-state", "Remove {}?".format(
+                spec.get("name", ""))):
+            return
+        del self.project["city_states"][i]
+        self._refresh_lists()
+
     def on_export_leaders(self):
         """Export the selected leaders (all of them, and every
         civilization, if none is selected) with their images and the
@@ -1076,7 +1204,8 @@ class GeneratorApp(tk.Tk):
 
     def on_new_project(self):
         if (self.project["leaders"] or self.project["civs"] or
-                self.project.get("religions")) and \
+                self.project.get("religions") or
+                self.project.get("city_states")) and \
                 not messagebox.askyesno(
                     "New project",
                     "Discard the current project and start fresh?"):
@@ -1191,12 +1320,14 @@ class GeneratorApp(tk.Tk):
             return
         self._mark_saved()
         messagebox.showinfo("Project saved",
-                            "Saved {} leader(s), {} civilization(s) and {} "
-                            "religion(s) to:\n{}".format(
-                                len(self.project["leaders"]),
-                                len(self.project["civs"]),
-                                len(self.project.get("religions") or []),
-                                path))
+                            "Saved {} leader(s), {} civilization(s), {} "
+                            "religion(s) and {} city-state(s) to:\n{}"
+                            .format(len(self.project["leaders"]),
+                                    len(self.project["civs"]),
+                                    len(self.project.get("religions") or []),
+                                    len(self.project.get("city_states")
+                                        or []),
+                                    path))
 
     def on_save_project_as(self):
         """Save under a new file name (the project then lives there)."""
@@ -1310,16 +1441,18 @@ class GeneratorApp(tk.Tk):
         if not out_root:
             messagebox.showwarning("Missing input", "Choose an output folder.")
             return False
-        if not self.project["leaders"] and not self.project.get("religions"):
+        if not (self.project["leaders"] or self.project.get("religions")
+                or self.project.get("city_states")):
             messagebox.showwarning("No leaders",
-                                   "Add at least one leader (or religion) "
-                                   "to the project.")
+                                   "Add at least one leader (or religion, "
+                                   "or city-state) to the project.")
             return False
 
         # 1) validate everything up front; collect every problem
-        civs, ctxs, errors, religions = prepare_project(
+        civs, ctxs, errors, religions, city_states = prepare_project(
             self.project["leaders"], self.project["civs"], self.data,
-            self.type_prefix(), self.project.get("religions") or [])
+            self.type_prefix(), self.project.get("religions") or [],
+            self.project.get("city_states") or [])
         extra_files, file_errors = check_extra_files(
             self.project.get("extra_files"))
         errors += file_errors
@@ -1328,7 +1461,7 @@ class GeneratorApp(tk.Tk):
                                    "\n\n".join(errors))
             return False
         existing = ["{} ({})".format(c["name"], c["slug"])
-                    for c in civs + ctxs + religions
+                    for c in civs + ctxs + religions + city_states
                     if c["exists_in_game"]]
         if existing and not messagebox.askyesno(
                 "Already in the game data",
@@ -1363,7 +1496,8 @@ class GeneratorApp(tk.Tk):
         wants_art = any(needs_art(c) for c in ctxs) or \
             any(cc["icon_custom"] for cc in civs) or \
             any(u["icon_custom"] for u in all_uniques(civs, ctxs)) or \
-            any(r["icon_custom"] for r in religions)
+            any(r["icon_custom"] for r in religions) or \
+            any(cs["icon_custom"] for cs in city_states)
         cooker = self._cooker_path() if wants_art else None
 
         # 3) convert, cook and write in a thread behind a progress window
@@ -1376,7 +1510,8 @@ class GeneratorApp(tk.Tk):
                 {"version": publish["version"], "author": publish["author"],
                  "description": plain_text(publish["description"])},
                 stamp, extra_files, religions, use_cache,
-                (theme.art_cache_gb() or 0) * 1024 ** 3 or None))
+                (theme.art_cache_gb() or 0) * 1024 ** 3 or None,
+                city_states))
         except OSError as exc:
             messagebox.showerror("Could not write mod", str(exc))
             return False
@@ -1390,10 +1525,12 @@ class GeneratorApp(tk.Tk):
         if messagebox.askyesno(
                 "Done",
                 "Mod written to:\n{}\n\n{} file operation(s), {} "
-                "civilization(s), {} leader(s), {} religion(s), {} custom "
-                "icon(s).{}\n\nOpen the folder now?".format(
+                "civilization(s), {} leader(s), {} religion(s), {} "
+                "city-state(s), {} custom icon(s).{}\n\nOpen the folder "
+                "now?".format(
                     mod_dir, len(report), len(civs), len(ctxs),
-                    len(religions), icon_count, warning_text)):
+                    len(religions), len(city_states), icon_count,
+                    warning_text)):
             self._open_folder(mod_dir)
         return True
 
@@ -1426,6 +1563,7 @@ class GeneratorApp(tk.Tk):
         """A hash of everything the generated mod is made from."""
         publish = self.publish_values()
         religions = self.project.get("religions") or []
+        city_states = self.project.get("city_states") or []
         # (a custom file changed since is as new as an edited leader)
         custom = [dict(f, mtime=os.path.getmtime(f["path"])
                        if os.path.isfile(f.get("path") or "") else None)
@@ -1435,7 +1573,8 @@ class GeneratorApp(tk.Tk):
                            publish["version"], publish["author"],
                            publish["description"],
                            *([custom] if custom else []),
-                           *([religions] if religions else []))
+                           *([religions] if religions else []),
+                           *([city_states] if city_states else []))
 
     def uploader_path(self, ask=True):
         """The SDK's Workshop uploader: remembered, found, or asked for."""
